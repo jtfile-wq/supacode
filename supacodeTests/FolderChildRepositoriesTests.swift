@@ -122,6 +122,19 @@ struct FolderChildRepositoriesTests {
     #expect(ordered.contains(other.id))
   }
 
+  @Test func parentMatchSurvivesTrailingSlashIDDivergence() {
+    // An open-panel folder id ends in "/" (directory URL); a child id derived
+    // from a plain path doesn't. The parent match must hold across both forms.
+    let slashedFolderURL = URL(fileURLWithPath: "/tmp/unify", isDirectory: true)
+    let folder = makeFolderRepository(root: slashedFolderURL)
+    let child = makeGitRepository(root: URL(fileURLWithPath: "/tmp/unify/unify-api"))
+    let state = makeState(repositories: [folder, child], roots: [slashedFolderURL])
+
+    #expect(folder.id.rawValue.hasSuffix("/"))
+    #expect(state.parentFolderRepositoryID(of: child) == folder.id)
+    #expect(state.folderHasAttachedRepositories(folder.id))
+  }
+
   @Test func parentFolderRepositoryIDIsNilForTopLevelAndFolderRepos() {
     let folderURL = URL(fileURLWithPath: "/tmp/unify")
     let folder = makeFolderRepository(root: folderURL)

@@ -4921,18 +4921,22 @@ extension RepositoriesFeature.State {
   /// sits one level inside a connected folder.
   func parentFolderRepositoryID(of repository: Repository) -> Repository.ID? {
     guard repository.isGitRepository, let localRoot = repository.localRootURL else { return nil }
-    // `deletingLastPathComponent()` yields a directory URL whose path keeps a
-    // trailing slash; repository ids never carry one, so trim before matching.
-    let parentID = RepositoryID(
-      RepositoryLocation.normalizedRemotePath(
-        localRoot.deletingLastPathComponent().standardizedFileURL.path(percentEncoded: false)
-      )
+    // Local ids derive from `URL.path(percentEncoded:)`, whose trailing slash
+    // depends on the URL's directory-ness: an open-panel folder id ends in
+    // "/", a persisted-string round-trip for a missing path doesn't. Compare
+    // slash-normalized paths instead of exact ids so the parent match holds
+    // for both forms.
+    let childPath = RepositoryLocation.normalizedRemotePath(
+      localRoot.standardizedFileURL.path(percentEncoded: false)
     )
-    guard parentID != repository.id,
-      let parent = repositories[id: parentID],
-      !parent.isGitRepository
-    else { return nil }
-    return parent.id
+    let parentPath = RepositoryLocation.normalizedRemotePath(
+      localRoot.deletingLastPathComponent().standardizedFileURL.path(percentEncoded: false)
+    )
+    guard parentPath != childPath else { return nil }
+    return repositories.first { candidate in
+      !candidate.isGitRepository && candidate.host == nil
+        && RepositoryLocation.normalizedRemotePath(candidate.location.path) == parentPath
+    }?.id
   }
 
   /// Whether any loaded repository sits one level inside this folder. Drives
