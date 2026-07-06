@@ -4258,8 +4258,24 @@ struct RepositoriesFeature {
   }
 
   private func loadRepositoriesData(_ roots: [URL]) async -> ([Repository], [LoadFailure]) {
+    // Folder roots contribute the git repositories one level inside them so the
+    // sidebar can render a folder's repos beneath it. Discovered children load
+    // exactly like user-added repositories but are never persisted into
+    // `repositoryRoots`: they re-derive from disk on every reload, so a repo
+    // cloned into (or deleted from) a folder appears / disappears on refresh.
+    var loadRoots = roots.map(\.standardizedFileURL)
+    var seenRootIDs = Set(loadRoots.map { RepositoryID($0.path(percentEncoded: false)) })
+    for root in loadRoots where !Repository.isGitRepository(at: root) {
+      for child in Repository.childGitRepositoryURLs(in: root) {
+        let childID = RepositoryID(child.path(percentEncoded: false))
+        if seenRootIDs.insert(childID).inserted {
+          loadRoots.append(child)
+        }
+      }
+    }
+
     let fetchResults = await withTaskGroup(of: WorktreesFetchResult.self) { group in
-      for root in roots {
+      for root in loadRoots {
         let gitClient = self.gitClient
         group.addTask {
           await Self.worktreesFetchResult(for: root, gitClient: gitClient)
@@ -4276,7 +4292,7 @@ struct RepositoriesFeature {
 
     var loaded: [Repository] = []
     var failures: [LoadFailure] = []
-    for root in roots {
+    for root in loadRoots {
       let normalizedRoot = root.standardizedFileURL
       let rootID = RepositoryID(normalizedRoot.path(percentEncoded: false))
       guard let result = fetchResults[rootID] else { continue }
@@ -4871,7 +4887,49 @@ extension RepositoriesFeature.State {
     for repository in repositories where seen.insert(repository.id).inserted {
       ordered.append(repository.id)
     }
-    return ordered
+    return groupingFolderChildren(ordered)
+  }
+
+  /// The folder-kind repository whose root directly contains `repository`, or
+  /// `nil` when the repo is top-level. Derived purely from paths so folder →
+  /// child nesting needs no persistence: a repo is a child exactly while it
+  /// sits one level inside a connected folder.
+  func parentFolderRepositoryID(of repository: Repository) -> Repository.ID? {
+    guard repository.isGitRepository, let localRoot = repository.localRootURL else { return nil }
+    let parentID = RepositoryID(
+      localRoot.deletingLastPathComponent().standardizedFileURL.path(percentEncoded: false)
+    )
+    guard parentID != repository.id,
+      let parent = repositories[id: parentID],
+      !parent.isGitRepository
+    else { return nil }
+    return parent.id
+  }
+
+  /// Reorders `ordered` so every folder's child repositories sit immediately
+  /// after their parent folder, preserving relative order otherwise. Runs
+  /// inside `orderedRepositoryIDs()` so the section builder, the
+  /// `.repositoriesMoved` reducer, and the view's drag mapping all share one
+  /// consistent index space.
+  private func groupingFolderChildren(_ ordered: [Repository.ID]) -> [Repository.ID] {
+    var childrenByParent: [Repository.ID: [Repository.ID]] = [:]
+    for id in ordered {
+      guard let repository = repositories[id: id],
+        let parentID = parentFolderRepositoryID(of: repository)
+      else { continue }
+      childrenByParent[parentID, default: []].append(id)
+    }
+    guard !childrenByParent.isEmpty else { return ordered }
+    let childIDs = Set(childrenByParent.values.joined())
+    var grouped: [Repository.ID] = []
+    grouped.reserveCapacity(ordered.count)
+    for id in ordered where !childIDs.contains(id) {
+      grouped.append(id)
+      if let children = childrenByParent[id] {
+        grouped.append(contentsOf: children)
+      }
+    }
+    return grouped
   }
 
   func repositoryID(for worktreeID: Worktree.ID?) -> Repository.ID? {

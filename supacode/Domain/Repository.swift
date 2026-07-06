@@ -117,6 +117,31 @@ nonisolated struct Repository: Identifiable, Hashable, Sendable {
       && fileManager.fileExists(atPath: refsPath)
   }
 
+  /// Git repositories one level inside a folder root, sorted by name for a
+  /// stable sidebar order. Non-recursive on purpose: the sidebar nests one
+  /// level (folder → repos), and a deep scan of a large tree would stall the
+  /// load path. Pure FileManager work — safe off the main actor.
+  nonisolated static func childGitRepositoryURLs(in rootURL: URL) -> [URL] {
+    let fileManager = FileManager.default
+    guard
+      let entries = try? fileManager.contentsOfDirectory(
+        at: rootURL,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles]
+      )
+    else { return [] }
+    return
+      entries
+      .filter { url in
+        guard (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else {
+          return false
+        }
+        return isGitRepository(at: url)
+      }
+      .map(\.standardizedFileURL)
+      .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+  }
+
   /// Synthetic worktree id for a local folder repository: the repo root path.
   /// Equals the owning repo id, so it round-trips back via `RepositoryID(_:)`;
   /// it can't collide with a git worktree because a path is git or folder, never

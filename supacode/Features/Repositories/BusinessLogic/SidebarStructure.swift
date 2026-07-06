@@ -265,6 +265,10 @@ struct SidebarStructure: Equatable, Sendable {
   /// this to translate `.onMove` flat offsets into the index space the
   /// `.repositoriesMoved` reducer action expects.
   var reorderableRepositoryIDs: [Repository.ID]
+  /// Repositories discovered one level inside a folder root. Their sections
+  /// render indented beneath the folder row and are not drag-reorderable
+  /// (their position derives from the parent folder).
+  var nestedRepositoryIDs: Set<Repository.ID> = []
 
   static let empty = SidebarStructure(
     sections: [],
@@ -585,7 +589,8 @@ extension RepositoriesFeature.State {
       slotByID: hotkey.slotByID,
       repositoryHighlightByID: highlightProjections.tags,
       hoistSummaryByRepositoryID: highlightProjections.summaries,
-      reorderableRepositoryIDs: repoSections.reorderableRepositoryIDs
+      reorderableRepositoryIDs: repoSections.reorderableRepositoryIDs,
+      nestedRepositoryIDs: repoSections.nestedRepositoryIDs
     )
   }
 
@@ -633,11 +638,13 @@ extension RepositoriesFeature.State {
   private struct RepositorySectionsBuild {
     var sections: [SidebarStructure.Section]
     var reorderableRepositoryIDs: [Repository.ID]
+    var nestedRepositoryIDs: Set<Repository.ID> = []
   }
 
   private func buildRepositorySections(hoisted: Set<Worktree.ID>) -> RepositorySectionsBuild {
     var sections: [SidebarStructure.Section] = []
     var reorderableRepositoryIDs: [Repository.ID] = []
+    var nestedRepositoryIDs: Set<Repository.ID> = []
     let pendingIDsByRepo: [Repository.ID: Set<Worktree.ID>] = Dictionary(
       grouping: pendingWorktrees,
       by: \.repositoryID
@@ -695,6 +702,10 @@ extension RepositoriesFeature.State {
         continue
       }
 
+      if parentFolderRepositoryID(of: repository) != nil {
+        nestedRepositoryIDs.insert(repositoryID)
+      }
+
       let groups = SidebarItemGroup.computeSlots(
         in: self,
         repositoryID: repositoryID,
@@ -707,7 +718,8 @@ extension RepositoriesFeature.State {
 
     return RepositorySectionsBuild(
       sections: sections,
-      reorderableRepositoryIDs: reorderableRepositoryIDs
+      reorderableRepositoryIDs: reorderableRepositoryIDs,
+      nestedRepositoryIDs: nestedRepositoryIDs
     )
   }
 

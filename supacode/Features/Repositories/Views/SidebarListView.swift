@@ -240,15 +240,20 @@ private struct SidebarSectionDispatcher: View {
       }
     case .repository(let repositoryID, let groups):
       if let repository = store.state.repositories[id: repositoryID] {
+        let isNested = structure.nestedRepositoryIDs.contains(repositoryID)
         SidebarGitRepositorySection(
           repository: repository,
           groups: groups,
+          isNested: isNested,
           hoistSummary: structure.hoistSummaryByRepositoryID[repositoryID],
           shortcutHintByID: shortcutHintByID,
           selectedWorktreeIDs: selectedWorktreeIDs,
           store: store,
           terminalManager: terminalManager
         )
+        // A nested repo's position derives from its parent folder, so it is
+        // never a drag source; top-level sections stay reorderable.
+        .moveDisabled(isNested)
       }
     }
   }
@@ -257,6 +262,9 @@ private struct SidebarSectionDispatcher: View {
 private struct SidebarGitRepositorySection: View {
   let repository: Repository
   let groups: [SidebarItemGroup]
+  /// True for a repo discovered inside a folder root: the section renders
+  /// indented beneath its folder row.
+  var isNested = false
   /// Non-nil when one or more of this repo's rows were hoisted into the
   /// highlight sections; rendered as a muted summary line under the rows.
   let hoistSummary: SidebarHoistSummary?
@@ -277,12 +285,14 @@ private struct SidebarGitRepositorySection: View {
         store: store,
         terminalManager: terminalManager
       )
+      .padding(.leading, isNested ? 12 : 0)
       if let hoistSummary {
         SidebarHoistSummaryRow(
           repositoryName: Repository.sidebarDisplayName(custom: section?.title, fallback: repository.name),
           summary: hoistSummary,
           store: store
         )
+        .padding(.leading, isNested ? 12 : 0)
       }
     } header: {
       RepoSectionHeaderView(
@@ -293,12 +303,14 @@ private struct SidebarGitRepositorySection: View {
         hostInfo: repository.host?.displayAuthority,
         isResolving: isResolvingRemote
       )
+      .padding(.leading, isNested ? 12 : 0)
     }
     .sectionActions {
       SidebarSectionActionsView(
         repositoryID: repository.id,
         isRemovingRepository: isRemovingRepository,
         isRemote: repository.host != nil,
+        isFolderChild: isNested,
         store: store
       )
     }
@@ -373,6 +385,10 @@ private struct SidebarSectionActionsView: View {
   /// route Remove to `removeRemoteRepository` (drops the config; remote files
   /// untouched). Worktree creation (`+`) works for remote repos too.
   var isRemote: Bool = false
+  /// A repo discovered inside a folder root hides "Remove Repository…": it is
+  /// derived from disk on every reload, so removing it would silently undo
+  /// itself. Removing the parent folder removes the whole group.
+  var isFolderChild: Bool = false
   let store: StoreOf<RepositoriesFeature>
 
   var body: some View {
@@ -394,16 +410,18 @@ private struct SidebarSectionActionsView: View {
         }
         .help("Repository Settings")
       }
-      Divider()
-      Button(
-        isRemote ? "Remove Remote Repository…" : "Remove Repository…",
-        systemImage: "folder.badge.minus",
-        role: .destructive
-      ) {
-        store.send(.requestDeleteRepository(repositoryID))
+      if !isFolderChild {
+        Divider()
+        Button(
+          isRemote ? "Remove Remote Repository…" : "Remove Repository…",
+          systemImage: "folder.badge.minus",
+          role: .destructive
+        ) {
+          store.send(.requestDeleteRepository(repositoryID))
+        }
+        .help(isRemote ? "Remove this remote repository (remote files are untouched)" : "Remove Repository")
+        .disabled(isRemovingRepository)
       }
-      .help(isRemote ? "Remove this remote repository (remote files are untouched)" : "Remove Repository")
-      .disabled(isRemovingRepository)
     } label: {
       Image(systemName: "ellipsis")
         .accessibilityLabel("Options")
