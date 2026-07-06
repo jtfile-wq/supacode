@@ -672,7 +672,14 @@ extension RepositoriesFeature.State {
       // A disconnected remote keeps a placeholder repository (so it isn't
       // pruned) plus a load failure; render it like a missing local folder.
       if loadFailuresByID[repositoryID] != nil {
-        guard let rootURL = localRootsByID[repositoryID] ?? repository?.rootURL else { continue }
+        // A discovered folder child has no persisted root and, on failure, no
+        // repository entry — but its local id is its absolute path, so the
+        // failed row's URL can be recovered from the id itself.
+        let synthesizedRoot =
+          repositoryID.rawValue.hasPrefix("/")
+          ? URL(fileURLWithPath: repositoryID.rawValue, isDirectory: true) : nil
+        guard let rootURL = localRootsByID[repositoryID] ?? repository?.rootURL ?? synthesizedRoot
+        else { continue }
         let sectionEntry = sidebar.sections[repositoryID]
         // A folder's custom name / color live on its synthetic folder-worktree
         // item (the row is a worktree row), not the section, so fall back to it.

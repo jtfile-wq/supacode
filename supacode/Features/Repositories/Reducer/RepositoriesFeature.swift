@@ -1575,7 +1575,24 @@ struct RepositoriesFeature {
         // Firing once per batch (instead of once per target) removes
         // the reload race.
         guard !repositoryIDs.isEmpty else { return .none }
-        let idSet = Set(repositoryIDs)
+        var idSet = Set(repositoryIDs)
+        // A discovered child exists only through its parent folder, so removing
+        // the folder removes the child from state too — otherwise it would
+        // linger as a top-level repo until the next disk reload. Children whose
+        // path is itself a persisted root were added explicitly and stay.
+        let persistedRootIDs = Set(
+          state.repositoryRoots.map {
+            RepositoryID($0.standardizedFileURL.path(percentEncoded: false))
+          }
+        )
+        for repository in state.repositories {
+          guard !idSet.contains(repository.id),
+            !persistedRootIDs.contains(repository.id),
+            let parentID = state.parentFolderRepositoryID(of: repository),
+            idSet.contains(parentID)
+          else { continue }
+          idSet.insert(repository.id)
+        }
         for id in repositoryIDs {
           let kind = (state.repositories[id: id]?.isGitRepository ?? true) ? "git" : "folder"
           analyticsClient.capture("repository_removed", ["kind": kind])
@@ -1593,7 +1610,7 @@ struct RepositoriesFeature {
         // the user's old title / color when the same path is re-added
         // later.
         state.$sidebar.withLock { sidebar in
-          for id in repositoryIDs {
+          for id in idSet {
             sidebar.sections.removeValue(forKey: id)
           }
         }
@@ -4886,6 +4903,14 @@ extension RepositoriesFeature.State {
     for id in rootIDs where seen.insert(id).inserted { ordered.append(id) }
     for repository in repositories where seen.insert(repository.id).inserted {
       ordered.append(repository.id)
+    }
+    // A discovered folder child that failed to load has no `repositories`
+    // entry and no persisted root, so neither pass above surfaces it. Append
+    // its failure id here so the failed-repository row still renders instead
+    // of the child silently vanishing from the sidebar.
+    for id in loadFailuresByID.keys.sorted(by: { $0.rawValue < $1.rawValue })
+    where seen.insert(id).inserted {
+      ordered.append(id)
     }
     return groupingFolderChildren(ordered)
   }

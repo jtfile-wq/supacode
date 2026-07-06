@@ -158,4 +158,65 @@ struct FolderChildRepositoriesTests {
 
     #expect(structure.nestedRepositoryIDs.isEmpty)
   }
+
+  // MARK: - Removal cascade.
+
+  @Test func removingFolderPrunesDerivedChildrenButKeepsExplicitRoots() async {
+    let folderURL = URL(fileURLWithPath: "/tmp/unify")
+    let folder = makeFolderRepository(root: folderURL)
+    // Derived: discovered inside the folder, not a persisted root.
+    let derived = makeGitRepository(root: URL(fileURLWithPath: "/tmp/unify/unify-api"))
+    // Explicit: also inside the folder, but the user added it directly.
+    let explicitURL = URL(fileURLWithPath: "/tmp/unify/unify-app")
+    let explicit = makeGitRepository(root: explicitURL)
+    var state = makeState(
+      repositories: [folder, derived, explicit],
+      roots: [folderURL, explicitURL]
+    )
+    state.reconcileSidebarForTesting()
+
+    let store = TestStore(initialState: state) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.repositoryPersistence.saveRoots = { _ in }
+      $0.repositoryPersistence.pruneRepositoryConfigs = { _ in }
+      $0.analyticsClient.capture = { _, _ in }
+      $0.gitClient.isGitRepository = { _ in false }
+      $0.gitClient.worktrees = { _ in [] }
+      $0.uuid = .incrementing
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.repositoriesRemoved([folder.id], selectionWasRemoved: false))
+    await store.skipReceivedActions()
+
+    // The derived child lived only through its parent folder; the explicit
+    // root survives the folder's removal.
+    #expect(store.state.repositories[id: folder.id] == nil)
+    #expect(store.state.repositories[id: derived.id] == nil)
+    #expect(store.state.repositories[id: explicit.id] != nil)
+    #expect(store.state.repositoryRoots == [explicitURL])
+  }
+
+  // MARK: - Failure visibility.
+
+  @Test func failedChildRepositoryStillRendersFailureRow() {
+    let folderURL = URL(fileURLWithPath: "/tmp/unify")
+    let folder = makeFolderRepository(root: folderURL)
+    // A discovered child that failed to load: present only as a LoadFailure —
+    // no repositories entry, no persisted root.
+    let failedChildID = RepositoryID("/tmp/unify/corrupt-repo")
+    var state = makeState(repositories: [folder], roots: [folderURL])
+    state.loadFailuresByID = [failedChildID: "fatal: not a git repository"]
+
+    let structure = state.computeSidebarStructure(groupPinned: true, groupActive: true)
+
+    let failedSection = structure.sections.compactMap { section -> URL? in
+      if case .failedRepository(let id, let rootURL, _, _, _) = section, id == failedChildID {
+        return rootURL
+      }
+      return nil
+    }.first
+    #expect(failedSection?.path(percentEncoded: false) == "/tmp/unify/corrupt-repo")
+  }
 }
