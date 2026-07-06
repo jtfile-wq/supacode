@@ -138,7 +138,17 @@ nonisolated struct Repository: Identifiable, Hashable, Sendable {
         }
         return isGitRepository(at: url)
       }
-      .map(\.standardizedFileURL)
+      .map { url in
+        // `contentsOfDirectory` returns directory URLs whose path keeps a
+        // trailing slash; rebuild from the trimmed path so the derived
+        // repository id matches the slash-less id the same repo gets when
+        // added explicitly.
+        URL(
+          fileURLWithPath: RepositoryLocation.normalizedRemotePath(
+            url.standardizedFileURL.path(percentEncoded: false)
+          )
+        )
+      }
       .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
   }
 

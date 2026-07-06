@@ -3,6 +3,7 @@ import Foundation
 import IdentifiedCollections
 import Testing
 
+@testable import SupacodeSettingsShared
 @testable import supacode
 
 /// Coverage for folder → child-repository nesting: `Repository.childGitRepositoryURLs`

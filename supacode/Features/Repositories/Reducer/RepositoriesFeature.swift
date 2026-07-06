@@ -4921,8 +4921,12 @@ extension RepositoriesFeature.State {
   /// sits one level inside a connected folder.
   func parentFolderRepositoryID(of repository: Repository) -> Repository.ID? {
     guard repository.isGitRepository, let localRoot = repository.localRootURL else { return nil }
+    // `deletingLastPathComponent()` yields a directory URL whose path keeps a
+    // trailing slash; repository ids never carry one, so trim before matching.
     let parentID = RepositoryID(
-      localRoot.deletingLastPathComponent().standardizedFileURL.path(percentEncoded: false)
+      RepositoryLocation.normalizedRemotePath(
+        localRoot.deletingLastPathComponent().standardizedFileURL.path(percentEncoded: false)
+      )
     )
     guard parentID != repository.id,
       let parent = repositories[id: parentID],

@@ -675,9 +675,11 @@ extension RepositoriesFeature.State {
         // A discovered folder child has no persisted root and, on failure, no
         // repository entry — but its local id is its absolute path, so the
         // failed row's URL can be recovered from the id itself.
+        // No `isDirectory` hint: it would re-append the trailing slash that
+        // repository ids never carry.
         let synthesizedRoot =
           repositoryID.rawValue.hasPrefix("/")
-          ? URL(fileURLWithPath: repositoryID.rawValue, isDirectory: true) : nil
+          ? URL(fileURLWithPath: repositoryID.rawValue) : nil
         guard let rootURL = localRootsByID[repositoryID] ?? repository?.rootURL ?? synthesizedRoot
         else { continue }
         let sectionEntry = sidebar.sections[repositoryID]
