@@ -370,18 +370,13 @@ final class WorktreeTerminalState {
       for leaf in tree.leaves() {
         let sessionStartDir = startDirBySessionName[ZmxSessionID.make(surfaceID: leaf.id)]
         let launchPath = leaf.launchWorkingDirectory?.standardizedFileURL.path(percentEncoded: false)
-        terminalStateLogger.info(
-          "scopedFocus target=\(normalizedTarget) tab=\(tab.title) pwd=\(leaf.bridge.state.pwd ?? "nil") zmx=\(sessionStartDir ?? "nil") launch=\(launchPath ?? "nil")"
-        )
         guard matches(leaf.bridge.state.pwd) || matches(sessionStartDir) || matches(launchPath)
         else { continue }
-        terminalStateLogger.info("scopedFocus matched tab=\(tab.title)")
         selectTab(tab.id)
         focusSurface(leaf, in: tab.id)
         return
       }
     }
-    terminalStateLogger.info("scopedFocus no match; creating tab for \(normalizedTarget)")
     _ = createTab(title: directory.lastPathComponent, workingDirectory: directory)
   }
 
