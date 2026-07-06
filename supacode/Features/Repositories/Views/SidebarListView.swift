@@ -135,7 +135,7 @@ struct SidebarListView: View {
     await Task.yield()
     await Task.yield()
     let terminalState = terminalManager.state(for: folderWorktree)
-    terminalState.focusOrCreateTab(scopedTo: pending.repositoryRootURL)
+    await terminalState.focusOrCreateTab(scopedTo: pending.repositoryRootURL)
     store.send(.consumePendingFolderScopedFocus(pending.id))
   }
 

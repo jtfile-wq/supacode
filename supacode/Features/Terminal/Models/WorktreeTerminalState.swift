@@ -344,7 +344,7 @@ final class WorktreeTerminalState {
   /// Routes an attached repo's sidebar click into its folder's session:
   /// "go to the open one if there is one, else open one" — never a
   /// standalone terminal.
-  func focusOrCreateTab(scopedTo directory: URL) {
+  func focusOrCreateTab(scopedTo directory: URL) async {
     let targetPath = directory.standardizedFileURL.path(percentEncoded: false)
     let normalizedTarget =
       targetPath.count > 1 && targetPath.hasSuffix("/") ? String(targetPath.dropLast()) : targetPath
@@ -353,19 +353,35 @@ final class WorktreeTerminalState {
       if path.count > 1, path.hasSuffix("/") { path = String(path.dropLast()) }
       return path == normalizedTarget || path.hasPrefix(normalizedTarget + "/")
     }
+    // Surfaces run inside zmx, which doesn't forward the shell's OSC 7 pwd
+    // reports — so the session registry is the authority on where each pane's
+    // shell was spawned. Live pwd (set when a shell reports directly) wins;
+    // the surface's own launch directory is the last resort.
+    var startDirBySessionName: [String: String] = [:]
+    if let sessions = await zmxClient.listSessionsWithClients() {
+      for session in sessions {
+        if let startDir = session.startDir {
+          startDirBySessionName[session.name] = startDir
+        }
+      }
+    }
     for tab in tabManager.tabs {
       guard let tree = trees[tab.id] else { continue }
       for leaf in tree.leaves() {
-        // Live shell pwd first; fall back to the directory the surface
-        // launched in (a restored surface running a foreground TUI never
-        // re-emits OSC 7, so its live pwd is empty after app relaunch).
+        let sessionStartDir = startDirBySessionName[ZmxSessionID.make(surfaceID: leaf.id)]
         let launchPath = leaf.launchWorkingDirectory?.standardizedFileURL.path(percentEncoded: false)
-        guard matches(leaf.bridge.state.pwd) || matches(launchPath) else { continue }
+        terminalStateLogger.info(
+          "scopedFocus target=\(normalizedTarget) tab=\(tab.title) pwd=\(leaf.bridge.state.pwd ?? "nil") zmx=\(sessionStartDir ?? "nil") launch=\(launchPath ?? "nil")"
+        )
+        guard matches(leaf.bridge.state.pwd) || matches(sessionStartDir) || matches(launchPath)
+        else { continue }
+        terminalStateLogger.info("scopedFocus matched tab=\(tab.title)")
         selectTab(tab.id)
         focusSurface(leaf, in: tab.id)
         return
       }
     }
+    terminalStateLogger.info("scopedFocus no match; creating tab for \(normalizedTarget)")
     _ = createTab(title: directory.lastPathComponent, workingDirectory: directory)
   }
 

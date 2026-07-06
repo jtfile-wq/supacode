@@ -206,6 +206,15 @@ struct ZmxSessionListParserTests {
     #expect(entries == [.init(name: "supa-abc", clients: nil)])
   }
 
+  @Test func parsesStartDir() {
+    let entries = ZmxSessionListParser.parse(
+      "name=supa-abc\tpid=123\tclients=0\tcreated=0\tstart_dir=/Users/x/unify/unify-api\tcmd=/bin/zsh\n"
+    )
+    #expect(
+      entries == [.init(name: "supa-abc", clients: 0, startDir: "/Users/x/unify/unify-api")]
+    )
+  }
+
   @Test func stripsCurrentSessionArrowPrefix() {
     let entries = ZmxSessionListParser.parse("→ name=supa-abc\tpid=1\tclients=1\tcreated=0\n")
     #expect(entries == [.init(name: "supa-abc", clients: 1)])

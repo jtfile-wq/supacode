@@ -273,6 +273,11 @@ nonisolated enum ZmxSessionListParser {
     var name: String
     /// nil when the count is unknown (err/status line); the reaper spares these.
     var clients: Int?
+    /// Directory the session's shell was spawned in (`start_dir=`). The
+    /// folder-scoped tab matcher uses it to identify which pane works in
+    /// which repo, since zmx doesn't forward the shell's OSC 7 pwd reports.
+    /// Defaulted so the reaper's name/clients call sites stay source-stable.
+    var startDir: String? = nil
   }
 
   static func parse(_ stdout: String) -> [Entry] {
@@ -299,7 +304,8 @@ nonisolated enum ZmxSessionListParser {
         guard let name = values["name"], name.hasPrefix(ZmxSessionID.prefix) else { return nil }
         // Absent `clients=` (err/status line) maps to nil = unknown, not zero.
         let clients = values["clients"].flatMap { Int($0) }
-        return Entry(name: String(name), clients: clients)
+        let startDir = values["start_dir"].map(String.init)
+        return Entry(name: String(name), clients: clients, startDir: startDir)
       }
   }
 }
