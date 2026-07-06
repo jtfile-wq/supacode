@@ -604,9 +604,13 @@ extension RepositoriesFeature.State {
   private func computeHighlightHoists(groupPinned: Bool, groupActive: Bool) -> HighlightHoists {
     let archived = archivedWorktreeIDSet
     let pinned: [Worktree.ID]
+    // A folder row that anchors attached child repos stays inline: hoisting it
+    // into Pinned / Active would strand the children it groups.
+    let anchoredFolderRows = anchoredFolderRowIDs
     if groupPinned {
       let pinnedIDs = orderedHighlightPinnedIDs(archived: archived)
       pinned = orderedHighlightCandidates(forPinned: true, candidateIDs: pinnedIDs, excluding: [])
+        .filter { !anchoredFolderRows.contains($0) }
     } else {
       pinned = []
     }
@@ -627,6 +631,7 @@ extension RepositoriesFeature.State {
         candidateIDs: Array(candidateIDs),
         excluding: hoistedSet
       )
+      .filter { !anchoredFolderRows.contains($0) }
       hoistedSet.formUnion(active)
     } else {
       active = []
@@ -711,8 +716,28 @@ extension RepositoriesFeature.State {
         continue
       }
 
-      if parentFolderRepositoryID(of: repository) != nil {
+      if let parentID = parentFolderRepositoryID(of: repository) {
         nestedRepositoryIDs.insert(repositoryID)
+        // A collapsed folder folds its attached repos away entirely.
+        guard isRepositoryExpanded(parentID) else { continue }
+        // Attached repos render one compact row — the main checkout — so a
+        // folder full of busy repos stays scannable. The full worktree roster
+        // stays available by adding the repo as a top-level connection.
+        if let mainRowID = repository.worktrees.first(where: { isMainWorktree($0) })?.id {
+          sections.append(
+            .repository(
+              repositoryID: repositoryID,
+              groups: [
+                SidebarItemGroup(
+                  slot: .main(isSole: true),
+                  repositoryID: repositoryID,
+                  rowIDs: [mainRowID]
+                )
+              ]
+            )
+          )
+          continue
+        }
       }
 
       let groups = SidebarItemGroup.computeSlots(

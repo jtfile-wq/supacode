@@ -136,7 +136,7 @@ nonisolated struct Repository: Identifiable, Hashable, Sendable {
         guard (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else {
           return false
         }
-        return isGitRepository(at: url)
+        return isGitRepository(at: url) && !isLinkedWorktreeCheckout(at: url)
       }
       .map { url in
         // `contentsOfDirectory` returns directory URLs whose path keeps a
@@ -150,6 +150,22 @@ nonisolated struct Repository: Identifiable, Hashable, Sendable {
         )
       }
       .sorted { $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending }
+  }
+
+  /// Whether `rootURL` is a linked-worktree checkout rather than a standalone
+  /// repository: its `.git` is a regular *file* whose `gitdir:` pointer leads
+  /// into another repo's `worktrees/` metadata. Folder discovery skips these —
+  /// they are checkouts *of* a repo (already visible as that repo's worktree
+  /// rows), not repositories to list. A submodule's `.git` file points at
+  /// `modules/`, not `worktrees/`, so submodules still surface.
+  nonisolated static func isLinkedWorktreeCheckout(at rootURL: URL) -> Bool {
+    let dotGit = rootURL.appending(path: ".git", directoryHint: .notDirectory)
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: dotGit.path(percentEncoded: false), isDirectory: &isDirectory),
+      !isDirectory.boolValue,
+      let contents = try? String(contentsOf: dotGit, encoding: .utf8)
+    else { return false }
+    return contents.hasPrefix("gitdir:") && contents.contains("/worktrees/")
   }
 
   /// Synthetic worktree id for a local folder repository: the repo root path.

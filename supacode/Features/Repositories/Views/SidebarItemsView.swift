@@ -564,16 +564,34 @@ struct SidebarFolderRow: View {
 
   var body: some View {
     let isRepositoryRemoving = store.state.isRemovingRepository(repository)
-    SidebarItemRow(
-      rowID: rowID,
-      store: store,
-      terminalManager: terminalManager,
-      selectedWorktreeIDs: selectedWorktreeIDs,
-      isRepositoryRemoving: isRepositoryRemoving,
-      hideSubtitle: true,
-      moveMode: .alwaysEnabled,
-      shortcutHint: shortcutHint
-    )
+    let hasAttachedRepositories = store.state.folderHasAttachedRepositories(repository.id)
+    let isExpanded = store.state.isRepositoryExpanded(repository.id)
+    HStack(spacing: 4) {
+      SidebarItemRow(
+        rowID: rowID,
+        store: store,
+        terminalManager: terminalManager,
+        selectedWorktreeIDs: selectedWorktreeIDs,
+        isRepositoryRemoving: isRepositoryRemoving,
+        hideSubtitle: true,
+        moveMode: .alwaysEnabled,
+        shortcutHint: shortcutHint
+      )
+      if hasAttachedRepositories {
+        Button {
+          store.send(.repositoryExpansionChanged(repository.id, isExpanded: !isExpanded))
+        } label: {
+          Image(systemName: "chevron.down")
+            .rotationEffect(.degrees(isExpanded ? 0 : -90))
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .contentShape(Rectangle())
+            .accessibilityLabel(isExpanded ? "Collapse attached repositories" : "Expand attached repositories")
+        }
+        .buttonStyle(.plain)
+        .help(isExpanded ? "Hide the repositories inside this folder" : "Show the repositories inside this folder")
+      }
+    }
   }
 }
 

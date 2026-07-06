@@ -1,6 +1,7 @@
 import ComposableArchitecture
 import Foundation
 import IdentifiedCollections
+import OrderedCollections
 import Testing
 
 @testable import SupacodeSettingsShared
@@ -82,6 +83,12 @@ struct FolderChildRepositoriesTests {
       withIntermediateDirectories: true
     )
     try Data().write(to: root.appending(path: "loose-file", directoryHint: .notDirectory))
+    // A linked-worktree checkout (`.git` file pointing into `worktrees/`)
+    // is a checkout of a repo, not a repo — discovery must skip it.
+    let worktreeCheckout = root.appending(path: "wt-checkout", directoryHint: .isDirectory)
+    try fileManager.createDirectory(at: worktreeCheckout, withIntermediateDirectories: true)
+    try Data("gitdir: /somewhere/.git/worktrees/wt-checkout".utf8)
+      .write(to: worktreeCheckout.appending(path: ".git", directoryHint: .notDirectory))
 
     let children = Repository.childGitRepositoryURLs(in: root)
 
@@ -158,6 +165,87 @@ struct FolderChildRepositoriesTests {
     let structure = state.computeSidebarStructure(groupPinned: true, groupActive: true)
 
     #expect(structure.nestedRepositoryIDs.isEmpty)
+  }
+
+  @Test func collapsedFolderHidesChildSectionsButKeepsFolderRow() {
+    let folderURL = URL(fileURLWithPath: "/tmp/unify")
+    let folder = makeFolderRepository(root: folderURL)
+    let child = makeGitRepository(root: URL(fileURLWithPath: "/tmp/unify/unify-api"))
+    var state = makeState(repositories: [folder, child], roots: [folderURL])
+    state.$sidebar.withLock { sidebar in
+      var section = sidebar.sections[folder.id] ?? .init()
+      section.collapsed = true
+      sidebar.sections[folder.id] = section
+    }
+
+    let structure = state.computeSidebarStructure(groupPinned: true, groupActive: true)
+
+    let sectionIDs = structure.sections.map(\.id)
+    #expect(sectionIDs.contains(.folder(folder.id)))
+    #expect(!sectionIDs.contains(.repository(child.id)))
+    // Still tracked as nested (and reorder-mirrored) even while hidden.
+    #expect(structure.nestedRepositoryIDs == [child.id])
+  }
+
+  @Test func nestedRepoRendersOnlyItsMainRow() {
+    let folderURL = URL(fileURLWithPath: "/tmp/unify")
+    let folder = makeFolderRepository(root: folderURL)
+    let childRoot = URL(fileURLWithPath: "/tmp/unify/unify-api")
+    let main = Worktree(
+      id: WorktreeID(childRoot.path(percentEncoded: false)),
+      name: "main",
+      detail: "",
+      workingDirectory: childRoot,
+      repositoryRootURL: childRoot
+    )
+    let feature = Worktree(
+      id: WorktreeID("/tmp/unify/unify-api-wt/task"),
+      name: "task/ENG-1",
+      detail: "",
+      workingDirectory: URL(fileURLWithPath: "/tmp/unify/unify-api-wt/task"),
+      repositoryRootURL: childRoot
+    )
+    let child = Repository(
+      id: RepositoryID(childRoot.path(percentEncoded: false)),
+      rootURL: childRoot,
+      name: "unify-api",
+      worktrees: IdentifiedArray(uniqueElements: [main, feature])
+    )
+    let state = makeState(repositories: [folder, child], roots: [folderURL])
+
+    let structure = state.computeSidebarStructure(groupPinned: true, groupActive: true)
+
+    let childRows = structure.sections.compactMap { section -> [SidebarItemID]? in
+      if case .repository(let id, let groups) = section, id == child.id {
+        return groups.flatMap(\.rowIDs)
+      }
+      return nil
+    }.first
+    #expect(childRows == [main.id])
+  }
+
+  @Test func pinnedFolderWithChildrenStaysInlineAsAnchor() {
+    let folderURL = URL(fileURLWithPath: "/tmp/unify")
+    let folder = makeFolderRepository(root: folderURL)
+    let folderRowID = Repository.folderWorktreeID(for: folderURL)
+    let child = makeGitRepository(root: URL(fileURLWithPath: "/tmp/unify/unify-api"))
+    var state = makeState(repositories: [folder, child], roots: [folderURL])
+    state.$sidebar.withLock { sidebar in
+      var section = sidebar.sections[folder.id] ?? .init()
+      var pinnedBucket = section.buckets[.pinned] ?? .init()
+      pinnedBucket.items[folderRowID] = .init()
+      section.buckets[.pinned] = pinnedBucket
+      sidebar.sections[folder.id] = section
+    }
+
+    let structure = state.computeSidebarStructure(groupPinned: true, groupActive: true)
+
+    // The anchoring folder must not be hoisted away from its children: no
+    // highlight row for it, and its inline section still precedes the child.
+    #expect(!structure.hoistedRowIDs.contains(folderRowID))
+    let sectionIDs = structure.sections.map(\.id)
+    #expect(sectionIDs.contains(.folder(folder.id)))
+    #expect(sectionIDs.contains(.repository(child.id)))
   }
 
   // MARK: - Removal cascade.

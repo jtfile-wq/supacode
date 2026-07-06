@@ -4935,6 +4935,25 @@ extension RepositoriesFeature.State {
     return parent.id
   }
 
+  /// Whether any loaded repository sits one level inside this folder. Drives
+  /// the folder row's collapse chevron and keeps an anchoring folder from
+  /// being hoisted away from its attached repos.
+  func folderHasAttachedRepositories(_ folderID: Repository.ID) -> Bool {
+    repositories.contains { parentFolderRepositoryID(of: $0) == folderID }
+  }
+
+  /// Synthetic folder-row ids for folders that anchor visible child
+  /// repositories. Hoisting these into Pinned / Active would orphan the
+  /// children they group, so the highlight pass skips them.
+  var anchoredFolderRowIDs: Set<Worktree.ID> {
+    var ids: Set<Worktree.ID> = []
+    for repository in repositories {
+      guard let parentID = parentFolderRepositoryID(of: repository) else { continue }
+      ids.insert(WorktreeID(parentID.rawValue))
+    }
+    return ids
+  }
+
   /// Reorders `ordered` so every folder's child repositories sit immediately
   /// after their parent folder, preserving relative order otherwise. Runs
   /// inside `orderedRepositoryIDs()` so the section builder, the

@@ -285,14 +285,14 @@ private struct SidebarGitRepositorySection: View {
         store: store,
         terminalManager: terminalManager
       )
-      .padding(.leading, isNested ? 12 : 0)
+      .nestedAttachment(isNested)
       if let hoistSummary {
         SidebarHoistSummaryRow(
           repositoryName: Repository.sidebarDisplayName(custom: section?.title, fallback: repository.name),
           summary: hoistSummary,
           store: store
         )
-        .padding(.leading, isNested ? 12 : 0)
+        .nestedAttachment(isNested)
       }
     } header: {
       RepoSectionHeaderView(
@@ -303,7 +303,7 @@ private struct SidebarGitRepositorySection: View {
         hostInfo: repository.host?.displayAuthority,
         isResolving: isResolvingRemote
       )
-      .padding(.leading, isNested ? 12 : 0)
+      .nestedAttachment(isNested)
     }
     .sectionActions {
       SidebarSectionActionsView(
@@ -323,6 +323,27 @@ private struct SidebarGitRepositorySection: View {
         store.send(.repositoryExpansionChanged(repository.id, isExpanded: isExpanded))
       }
     )
+  }
+}
+
+extension View {
+  /// Indents a nested (folder-attached) repo's header and rows and draws the
+  /// vertical attachment rail that ties them back to the owning folder row.
+  /// A no-op for top-level sections.
+  @ViewBuilder
+  fileprivate func nestedAttachment(_ isNested: Bool) -> some View {
+    if isNested {
+      padding(.leading, 18)
+        .overlay(alignment: .leading) {
+          Rectangle()
+            .fill(.quaternary)
+            .frame(width: 1.5)
+            .padding(.leading, 7)
+            .accessibilityHidden(true)
+        }
+    } else {
+      self
+    }
   }
 }
 
