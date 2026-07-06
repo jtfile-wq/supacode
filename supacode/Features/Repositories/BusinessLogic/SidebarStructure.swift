@@ -463,6 +463,7 @@ extension RepositoriesFeature.Action {
       .openRepositories,
       .revealSelectedWorktreeInSidebar, .revealHoistedWorktreeInSidebar,
       .consumePendingSidebarReveal,
+      .consumePendingFolderScopedFocus,
       .createRandomWorktree,
       .promptedWorktreeCreationDataLoaded, .promptedWorktreeBranchesLoaded,
       .startPromptedWorktreeCreation,

@@ -261,6 +261,59 @@ struct FolderChildRepositoriesTests {
     #expect(sectionIDs.contains(.repository(child.id)))
   }
 
+  // MARK: - Folder-scoped selection redirect.
+
+  @Test func clickingAttachedRepoRedirectsSelectionIntoFolderSession() {
+    let folderURL = URL(fileURLWithPath: "/tmp/unify")
+    let folder = makeFolderRepository(root: folderURL)
+    let child = makeGitRepository(root: URL(fileURLWithPath: "/tmp/unify/unify-api"))
+    let childMainID = child.worktrees.first!.id
+    let folderWorktreeID = folder.worktrees.first!.id
+    var state = makeState(repositories: [folder, child], roots: [folderURL])
+
+    _ = state.reduceSelectionChangedEffect(selections: [.worktree(childMainID)], focusTerminal: false)
+
+    #expect(state.selectedWorktreeID == folderWorktreeID)
+    #expect(state.pendingFolderScopedFocus?.folderWorktreeID == folderWorktreeID)
+    #expect(state.pendingFolderScopedFocus?.repositoryRootURL == child.rootURL)
+  }
+
+  @Test func selectWorktreeActionRedirectsAttachedRepoToFolder() async {
+    let folderURL = URL(fileURLWithPath: "/tmp/unify")
+    let folder = makeFolderRepository(root: folderURL)
+    let child = makeGitRepository(root: URL(fileURLWithPath: "/tmp/unify/unify-api"))
+    let childMainID = child.worktrees.first!.id
+    let folderWorktreeID = folder.worktrees.first!.id
+    var state = makeState(repositories: [folder, child], roots: [folderURL])
+    state.reconcileSidebarForTesting()
+
+    let store = TestStore(initialState: state) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.gitClient.isGitRepository = { _ in false }
+      $0.gitClient.worktrees = { _ in [] }
+      $0.uuid = .incrementing
+    }
+    store.exhaustivity = .off(showSkippedAssertions: false)
+
+    await store.send(.selectWorktree(childMainID, focusTerminal: false))
+    await store.skipReceivedActions()
+
+    #expect(store.state.selectedWorktreeID == folderWorktreeID)
+    #expect(store.state.pendingFolderScopedFocus?.repositoryRootURL == child.rootURL)
+  }
+
+  @Test func topLevelRepoSelectionDoesNotRedirect() {
+    let repo = makeGitRepository(root: URL(fileURLWithPath: "/tmp/solo"))
+    let mainID = repo.worktrees.first!.id
+    var state = makeState(repositories: [repo], roots: [repo.rootURL])
+
+    _ = state.reduceSelectionChangedEffect(selections: [.worktree(mainID)], focusTerminal: false)
+
+    #expect(state.selectedWorktreeID == mainID)
+    #expect(state.pendingFolderScopedFocus == nil)
+  }
+
   // MARK: - Removal cascade.
 
   @Test func removingFolderPrunesDerivedChildrenButKeepsExplicitRoots() async {

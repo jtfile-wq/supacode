@@ -89,6 +89,15 @@ struct RepositoriesFeature {
     let worktreeID: Worktree.ID
   }
 
+  /// A folder-scoped terminal focus awaiting view-side consumption: focus (or
+  /// open) a tab rooted at `repositoryRootURL` inside the folder session that
+  /// `folderWorktreeID` hosts.
+  struct PendingFolderScopedFocus: Equatable {
+    let id: Int
+    let folderWorktreeID: Worktree.ID
+    let repositoryRootURL: URL
+  }
+
   @ObservableState
   struct State: Equatable {
     var repositories: IdentifiedArrayOf<Repository> = []
@@ -145,6 +154,11 @@ struct RepositoriesFeature {
     var sidebarSelectedWorktreeIDs: Set<Worktree.ID> = []
     var nextPendingSidebarRevealID = 0
     var pendingSidebarReveal: PendingSidebarReveal?
+    var nextPendingFolderScopedFocusID = 0
+    /// Set when selecting an attached repo's row: the selection redirects to
+    /// the parent folder's worktree, and the view consumes this to focus (or
+    /// open) a tab scoped to the repo inside the folder session.
+    var pendingFolderScopedFocus: PendingFolderScopedFocus?
     /// Browser-style back/forward stacks for worktree selection.
     /// Fresh selections push the previous worktree onto `back` and
     /// clear `forward`; the dedicated `worktreeHistoryBack` /
@@ -312,6 +326,7 @@ struct RepositoriesFeature {
     case revealSelectedWorktreeInSidebar
     case revealHoistedWorktreeInSidebar(Worktree.ID)
     case consumePendingSidebarReveal(Int)
+    case consumePendingFolderScopedFocus(Int)
     case createRandomWorktree
     case createRandomWorktreeInRepository(Repository.ID, pendingID: Worktree.ID? = nil)
     /// A CLI-initiated creation prompt was abandoned; drains the parked ack.
@@ -3311,6 +3326,13 @@ struct RepositoriesFeature {
         return .none
 
       case .selectWorktree(let worktreeID, let focusTerminal):
+        // An attached repo's row routes into its folder session, scoped to the
+        // repo, instead of the standalone worktree terminal. The folder's own
+        // worktree never re-redirects, so the recursion is single-step.
+        if let worktreeID, let redirect = state.folderScopedRedirect(for: worktreeID) {
+          state.stageFolderScopedFocus(redirect)
+          return .send(.selectWorktree(redirect.folderWorktreeID, focusTerminal: focusTerminal))
+        }
         state.setSingleWorktreeSelection(worktreeID)
         let selectedWorktree = state.worktree(for: worktreeID)
         var effects: [Effect<Action>] = [
@@ -3382,6 +3404,11 @@ struct RepositoriesFeature {
         // so no section / branch-prefix uncollapse is needed.
         state.nextPendingSidebarRevealID += 1
         state.pendingSidebarReveal = .init(id: state.nextPendingSidebarRevealID, worktreeID: worktreeID)
+        return .none
+
+      case .consumePendingFolderScopedFocus(let pendingID):
+        guard state.pendingFolderScopedFocus?.id == pendingID else { return .none }
+        state.pendingFolderScopedFocus = nil
         return .none
 
       case .consumePendingSidebarReveal(let pendingSidebarRevealID):
@@ -4946,6 +4973,33 @@ extension RepositoriesFeature.State {
     repositories.contains { parentFolderRepositoryID(of: $0) == folderID }
   }
 
+  /// If `worktreeID` is the main row of a folder-attached repo, the selection
+  /// routes into the folder's session instead of the repo's standalone
+  /// terminal: select the folder's worktree, then focus-or-open a tab scoped
+  /// to the repo. `nil` for everything else (top-level repos keep today's
+  /// behavior).
+  func folderScopedRedirect(for worktreeID: Worktree.ID) -> RepositoriesFeature.PendingFolderScopedFocus? {
+    guard let repositoryID = repositoryID(containing: worktreeID),
+      let repository = repositories[id: repositoryID],
+      let worktree = repository.worktrees[id: worktreeID],
+      isMainWorktree(worktree),
+      let repositoryRootURL = repository.localRootURL,
+      let parentID = parentFolderRepositoryID(of: repository),
+      let folderWorktreeID = repositories[id: parentID]?.worktrees.first?.id
+    else { return nil }
+    return .init(id: 0, folderWorktreeID: folderWorktreeID, repositoryRootURL: repositoryRootURL)
+  }
+
+  /// Stamps a fresh pending id and stores the redirect for view consumption.
+  mutating func stageFolderScopedFocus(_ redirect: RepositoriesFeature.PendingFolderScopedFocus) {
+    pendingFolderScopedFocus = .init(
+      id: nextPendingFolderScopedFocusID,
+      folderWorktreeID: redirect.folderWorktreeID,
+      repositoryRootURL: redirect.repositoryRootURL
+    )
+    nextPendingFolderScopedFocusID += 1
+  }
+
   /// Synthetic folder-row ids for folders that anchor visible child
   /// repositories. Hoisting these into Pinned / Active would orphan the
   /// children they group, so the highlight pass skips them.
@@ -5628,6 +5682,19 @@ extension RepositoriesFeature.State {
     selections: Set<SidebarSelection>,
     focusTerminal: Bool,
   ) -> Effect<RepositoriesFeature.Action> {
+    // A single click on an attached repo's row routes into its folder session
+    // (scoped tab focus) rather than the standalone worktree terminal. Multi-
+    // selections keep raw behavior; the folder worktree never re-redirects.
+    if selections.count == 1,
+      let clickedID = selections.first?.worktreeID,
+      let redirect = folderScopedRedirect(for: clickedID)
+    {
+      stageFolderScopedFocus(redirect)
+      return reduceSelectionChangedEffect(
+        selections: [.worktree(redirect.folderWorktreeID)],
+        focusTerminal: focusTerminal
+      )
+    }
     let previousSelection = selectedWorktreeID
     let previousSelectedWorktree = worktree(for: previousSelection)
 

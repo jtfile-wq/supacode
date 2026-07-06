@@ -115,7 +115,28 @@ struct SidebarListView: View {
       .task(id: pendingSidebarReveal?.id) {
         await revealPendingSidebarWorktree(pendingSidebarReveal, with: scrollProxy)
       }
+      .task(id: state.pendingFolderScopedFocus?.id) {
+        await consumeFolderScopedFocus(state.pendingFolderScopedFocus)
+      }
     }
+  }
+
+  /// Focuses (or opens) the folder-session tab scoped to an attached repo
+  /// after its sidebar row redirected selection to the folder worktree.
+  @MainActor
+  private func consumeFolderScopedFocus(
+    _ pending: RepositoriesFeature.PendingFolderScopedFocus?
+  ) async {
+    guard let pending,
+      let folderWorktree = store.state.worktree(for: pending.folderWorktreeID)
+    else { return }
+    // Give the detail pane a beat to materialize the folder's terminal state
+    // (mirrors `revealPendingSidebarWorktree`'s yield-before-use).
+    await Task.yield()
+    await Task.yield()
+    let terminalState = terminalManager.state(for: folderWorktree)
+    terminalState.focusOrCreateTab(scopedTo: pending.repositoryRootURL)
+    store.send(.consumePendingFolderScopedFocus(pending.id))
   }
 
   /// SwiftUI's `.onMove` reports offsets in the flat ForEach data array. The

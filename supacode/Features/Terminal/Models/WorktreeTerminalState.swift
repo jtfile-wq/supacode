@@ -292,14 +292,16 @@ final class WorktreeTerminalState {
     setupScript: String? = nil,
     initialInput: String? = nil,
     inheritingFromSurfaceId: UUID? = nil,
-    tabID: UUID? = nil
+    tabID: UUID? = nil,
+    title titleOverride: String? = nil,
+    workingDirectory: URL? = nil
   ) -> TerminalTabID? {
     let context: ghostty_surface_context_e =
       tabManager.tabs.isEmpty
       ? GHOSTTY_SURFACE_CONTEXT_WINDOW
       : GHOSTTY_SURFACE_CONTEXT_TAB
     let resolvedInheritanceSurfaceId = inheritingFromSurfaceId ?? currentFocusedSurfaceId()
-    let title = "\(worktree.name) \(nextTabIndex())"
+    let title = titleOverride ?? "\(worktree.name) \(nextTabIndex())"
     let setupInput = setupScriptInput(setupScript: setupScript)
     let commandInput = initialInput.flatMap { BlockingScriptRunner.makeCommandInput(script: $0) }
     let resolvedInput: String?
@@ -328,12 +330,36 @@ final class WorktreeTerminalState {
         inheritingFromSurfaceId: resolvedInheritanceSurfaceId,
         context: context,
         tabID: tabID,
+        workingDirectory: workingDirectory,
       )
     )
     if shouldConsumeSetupScript, tabId != nil {
       onSetupScriptConsumed?()
     }
     return tabId
+  }
+
+  /// Focuses the tab whose shell is already working inside `directory`
+  /// (matching each surface's live pwd), or opens a new tab rooted there.
+  /// Routes an attached repo's sidebar click into its folder's session:
+  /// "go to the open one if there is one, else open one" — never a
+  /// standalone terminal.
+  func focusOrCreateTab(scopedTo directory: URL) {
+    let targetPath = directory.standardizedFileURL.path(percentEncoded: false)
+    let normalizedTarget =
+      targetPath.count > 1 && targetPath.hasSuffix("/") ? String(targetPath.dropLast()) : targetPath
+    for tab in tabManager.tabs {
+      guard let tree = trees[tab.id] else { continue }
+      for leaf in tree.leaves() {
+        guard var pwd = leaf.bridge.state.pwd else { continue }
+        if pwd.count > 1, pwd.hasSuffix("/") { pwd = String(pwd.dropLast()) }
+        guard pwd == normalizedTarget || pwd.hasPrefix(normalizedTarget + "/") else { continue }
+        selectTab(tab.id)
+        focusSurface(leaf, in: tab.id)
+        return
+      }
+    }
+    _ = createTab(title: directory.lastPathComponent, workingDirectory: directory)
   }
 
   /// Stops a single user-defined script identified by its definition ID.
@@ -462,6 +488,10 @@ final class WorktreeTerminalState {
     let inheritingFromSurfaceId: UUID?
     let context: ghostty_surface_context_e
     let tabID: UUID?
+    /// Roots the tab's initial surface at this directory instead of the
+    /// worktree's own working directory (folder-session tabs scoped to an
+    /// attached repo).
+    var workingDirectory: URL?
     /// Marks the tab as a blocking-script tab so the no-split / no-rename
     /// / readonly-after-completion guardrails apply.
     var isBlockingScript: Bool = false
@@ -494,6 +524,7 @@ final class WorktreeTerminalState {
       inheritingFromSurfaceId: creation.inheritingFromSurfaceId,
       command: creation.command,
       initialInput: creation.initialInput,
+      workingDirectoryOverride: creation.workingDirectory,
       context: creation.context,
       surfaceID: creation.tabID != nil ? tabId.rawValue : nil,
       bypassZmx: creation.bypassZmx
@@ -787,6 +818,7 @@ final class WorktreeTerminalState {
     inheritingFromSurfaceId: UUID? = nil,
     command: String? = nil,
     initialInput: String? = nil,
+    workingDirectoryOverride: URL? = nil,
     context: ghostty_surface_context_e = GHOSTTY_SURFACE_CONTEXT_TAB,
     surfaceID: UUID? = nil,
     bypassZmx: Bool = false
@@ -798,6 +830,7 @@ final class WorktreeTerminalState {
       tabId: tabId,
       command: command,
       initialInput: initialInput,
+      workingDirectoryOverride: workingDirectoryOverride,
       inheritingFromSurfaceId: inheritingFromSurfaceId,
       context: context,
       surfaceID: surfaceID,
