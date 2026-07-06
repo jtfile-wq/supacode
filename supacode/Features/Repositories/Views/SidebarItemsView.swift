@@ -566,17 +566,19 @@ struct SidebarFolderRow: View {
     let isRepositoryRemoving = store.state.isRemovingRepository(repository)
     let hasAttachedRepositories = store.state.folderHasAttachedRepositories(repository.id)
     let isExpanded = store.state.isRepositoryExpanded(repository.id)
-    HStack(spacing: 4) {
-      SidebarItemRow(
-        rowID: rowID,
-        store: store,
-        terminalManager: terminalManager,
-        selectedWorktreeIDs: selectedWorktreeIDs,
-        isRepositoryRemoving: isRepositoryRemoving,
-        hideSubtitle: true,
-        moveMode: .alwaysEnabled,
-        shortcutHint: shortcutHint
-      )
+    SidebarItemRow(
+      rowID: rowID,
+      store: store,
+      terminalManager: terminalManager,
+      selectedWorktreeIDs: selectedWorktreeIDs,
+      isRepositoryRemoving: isRepositoryRemoving,
+      hideSubtitle: true,
+      moveMode: .alwaysEnabled,
+      shortcutHint: shortcutHint
+    )
+    // Overlay, not a container: wrapping the row would hide its selection
+    // `.tag` from the List and make the folder row unselectable.
+    .overlay(alignment: .trailing) {
       if hasAttachedRepositories {
         Button {
           store.send(.repositoryExpansionChanged(repository.id, isExpanded: !isExpanded))
@@ -589,6 +591,7 @@ struct SidebarFolderRow: View {
             .accessibilityLabel(isExpanded ? "Collapse attached repositories" : "Expand attached repositories")
         }
         .buttonStyle(.plain)
+        .padding(.trailing, 2)
         .help(isExpanded ? "Hide the repositories inside this folder" : "Show the repositories inside this folder")
       }
     }
