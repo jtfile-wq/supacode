@@ -348,12 +348,19 @@ final class WorktreeTerminalState {
     let targetPath = directory.standardizedFileURL.path(percentEncoded: false)
     let normalizedTarget =
       targetPath.count > 1 && targetPath.hasSuffix("/") ? String(targetPath.dropLast()) : targetPath
+    func matches(_ rawPath: String?) -> Bool {
+      guard var path = rawPath else { return false }
+      if path.count > 1, path.hasSuffix("/") { path = String(path.dropLast()) }
+      return path == normalizedTarget || path.hasPrefix(normalizedTarget + "/")
+    }
     for tab in tabManager.tabs {
       guard let tree = trees[tab.id] else { continue }
       for leaf in tree.leaves() {
-        guard var pwd = leaf.bridge.state.pwd else { continue }
-        if pwd.count > 1, pwd.hasSuffix("/") { pwd = String(pwd.dropLast()) }
-        guard pwd == normalizedTarget || pwd.hasPrefix(normalizedTarget + "/") else { continue }
+        // Live shell pwd first; fall back to the directory the surface
+        // launched in (a restored surface running a foreground TUI never
+        // re-emits OSC 7, so its live pwd is empty after app relaunch).
+        let launchPath = leaf.launchWorkingDirectory?.standardizedFileURL.path(percentEncoded: false)
+        guard matches(leaf.bridge.state.pwd) || matches(launchPath) else { continue }
         selectTab(tab.id)
         focusSurface(leaf, in: tab.id)
         return

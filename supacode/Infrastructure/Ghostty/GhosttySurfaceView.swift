@@ -73,6 +73,10 @@ final class GhosttySurfaceView: NSView, Identifiable {
   let bridge: GhosttySurfaceBridge
   private(set) var surface: ghostty_surface_t?
   private var surfaceRef: GhosttyRuntime.SurfaceReference?
+  /// Directory the surface launched in. Fallback identity for cwd matching
+  /// when the live `bridge.state.pwd` hasn't been reported yet — e.g. a
+  /// restored surface whose foreground TUI never re-emits OSC 7.
+  private(set) var launchWorkingDirectory: URL?
   private let workingDirectoryCString: UnsafeMutablePointer<CChar>?
   private let commandCString: UnsafeMutablePointer<CChar>?
   private let initialInputCString: UnsafeMutablePointer<CChar>?
@@ -218,6 +222,7 @@ final class GhosttySurfaceView: NSView, Identifiable {
     self.environmentVariables = environmentVariables
     self.commandWrapper = commandWrapper
     self.disableShellIntegration = disableShellIntegration
+    self.launchWorkingDirectory = workingDirectory
     if let workingDirectory {
       let path = Self.normalizedWorkingDirectoryPath(
         workingDirectory.path(percentEncoded: false)
