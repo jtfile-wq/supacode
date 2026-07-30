@@ -21,7 +21,9 @@ nonisolated struct FileTreeNode: Identifiable, Hashable, Sendable {
   var id: String { relativePath }
 }
 
-enum FileTree {
+/// `nonisolated` because the module defaults to MainActor isolation and this is
+/// a pure fold over paths: the loader runs it off the main actor for big repos.
+nonisolated enum FileTree {
   /// Folds a flat list of root-relative paths into nested nodes. Directories
   /// sort before files, then case-insensitively by name, matching Finder.
   static func build(
