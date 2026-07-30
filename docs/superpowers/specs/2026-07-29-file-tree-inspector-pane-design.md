@@ -37,7 +37,7 @@ tree, remote worktrees, a search or filter field.
 
 ## Architecture
 
-Eight existing files change and five are added. Keeping that surface small is a design goal, not an
+Ten existing files change and five are added. Keeping that surface small is a design goal, not an
 accident: every line here is rebased against upstream on each release.
 
 ### Existing files
@@ -50,7 +50,9 @@ accident: every line here is rebased against upstream on each release.
 | `supacode/Features/Repositories/Views/WorktreeDetailView.swift` | Add the button to `TrailingStatusToolbarContent` (:757), between git and notifications. |
 | `supacode/Features/Repositories/Views/WorktreeStatusInspector.swift` | Add `case .files:` to the switch (:19), passing the worktree and the tree state. |
 | `supacode/Commands/SidebarCommands.swift` | Add "Toggle Files Inspector" beside the existing two inspector menu items (:109 to :119), same `toggleInspectorPaneAction?(.files)` and `.disabled` treatment. |
-| `supacode/Clients/Git/GitClient.swift` | Add `listFiles(path:)` and `fileStatuses(path:)`. Existing `ls-files` invocations live at :564 and :573, so this follows established form. |
+| `supacode/Clients/Git/GitClient.swift` | Add `listFiles(for:)` and `fileStatuses(for:)`. Existing `ls-files` invocations live at :564 and :573, so this follows established form. |
+| `supacode/Clients/Repositories/GitClientDependency.swift` | Expose both as closure properties (:29), wire them in `make(shell:)` (:105), and stub them in `testValue` (:152). Nothing in the app calls `GitClient` directly; every consumer goes through this struct of explicit closures, and it has no forwarding, so a method added only to `GitClient` is invisible to `@Dependency(\.gitClient)`. |
+| `supacodeTests/RepositoriesFeatureTests.swift` | Extend with a `.files` pane case and the token bump. `CLAUDE.md:29` requires tests for reducer changes, and `toggleInspectorPaneOpensSwapsAndCloses` (:16) already covers this exact path for the other two panes. |
 | `supacode/Features/Terminal/Models/WorktreeTerminalState.swift` | Add `openFileViewerTab(url:)`. `TabCreation` and `createTab(_:)` are both `private` to this type (:670, :693), so a caller outside the file cannot construct one. The method has to live here, and it should be the only addition to this file. |
 
 ### New files
@@ -88,8 +90,19 @@ repo to ask.
 
 **Refresh.** Subscribe to the existing `.filesChanged(worktreeID:)` event, already emitted on a
 5 second debounce (`WorktreeInfoWatcherManager.swift:278`). No new watcher, no polling, no manual
-refresh button. Expansion state survives a refresh; it is keyed by relative path, not by node
-identity.
+refresh button.
+
+Expansion state survives a refresh, keyed by relative path rather than node identity. For the folder
+source that means the refresh re-reads every open directory, not just the root: folder nodes always
+come back with no children, so preserving expansion without re-reading would render open, empty
+rows. The cost is one directory read per directory the user actually opened.
+
+The reload is keyed on worktree id *and* the change token together. Keying on the token alone would
+skip the load when switching between two worktrees that both still sit at zero, which is every pair
+of worktrees nothing has written to yet.
+
+Both the directory reads and the tree fold run off the main actor. Enumerating a large directory
+blocks, and a big repo's file list is a real recursive fold plus a localized sort at every level.
 
 ## Opening a file
 
@@ -125,8 +138,13 @@ so the pager cannot rewrite the tab name out from under the filename.
 - **Git listing fails** for any reason, including the `GitEnvironmentError` the app already models
   for an unaccepted Xcode license: fall back to the lazy `FileManager` listing rather than showing
   an empty pane. A tree without tint beats no tree.
-- **Directory unreadable** on expand: the row stops showing a chevron and its help text explains why.
-  One bad directory does not fail the pane.
+- **Git status fails but the listing succeeded:** keep the listing and drop the tint. The two calls
+  get separate error handling precisely so a transient status failure, a concurrent agent holding
+  `index.lock` being the obvious one in this app, cannot discard a good file list and drop the pane
+  to a listing that ignores `.gitignore`.
+- **Directory unreadable** on expand: the row stays collapsed and carries a warning affordance. It is
+  recorded as failed, deliberately not as loaded, so the next click retries rather than expanding to
+  nothing. One bad directory does not fail the pane.
 - **File is gone** by the time it is clicked, which is likely when an agent is mid-refactor: refresh
   the tree instead of spawning a pager that immediately errors into a dead tab.
 - **Binary or huge file**: the pager's problem. Both `bat` and `less` handle it, and neither blocks
@@ -153,6 +171,8 @@ This is carried as a local patch indefinitely. Two consequences to keep in view 
 2. **No AI-authored commits.** `CONTRIBUTING.md` forbids an AI as author or co-author. Even though
    nothing here is going upstream today, keeping commits clean preserves the option, so no
    `Co-Authored-By` trailer on any commit in this repo.
+3. **Follow the repo's `CLAUDE.md`.** Two rules bind directly on this work: prefer Swift-native APIs
+   over Foundation where they exist (:31), and always add tests when reducer logic changes (:29).
 
 Builds are unsigned local builds, so Sparkle auto-updates do not apply to them. Upstream releases
 are pulled by rebasing this branch onto `upstream/main` and rebuilding.
