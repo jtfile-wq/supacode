@@ -201,6 +201,9 @@ final class WorktreeTerminalState {
   /// mid-operation states (e.g. the supersede clear-then-record in
   /// `runBlockingScript`) never reach TCA.
   @ObservationIgnored private var pendingRunningScriptsProjectionEmit = false
+  /// Read-only pager tabs opened from the files inspector. Closing one discards
+  /// nothing, so it skips the close confirmation that live terminals get.
+  @ObservationIgnored private var fileViewerTabs: Set<TerminalTabID> = []
   private var blockingScriptLaunchDirectories: [TerminalTabID: URL] = [:]
   private var lastBlockingScriptTabByKind: [BlockingScriptKind: TerminalTabID] = [:]
   private var pendingSetupScript: Bool
@@ -682,7 +685,7 @@ final class WorktreeTerminalState {
       // Opening a pager on a missing path would just produce a dead tab.
       return nil
     }
-    return createTab(
+    let tabId = createTab(
       TabCreation(
         title: url.lastPathComponent,
         icon: "doc.text",
@@ -696,6 +699,10 @@ final class WorktreeTerminalState {
         bypassZmx: true
       )
     )
+    if let tabId {
+      fileViewerTabs.insert(tabId)
+    }
+    return tabId
   }
 
   private static func pagerCommand(for url: URL) -> String {
@@ -1136,6 +1143,9 @@ final class WorktreeTerminalState {
   /// Nil when the tab closes without asking.
   private func closeConfirmationReason(_ tabId: TerminalTabID) -> CloseConfirmationReason? {
     guard !isBlockingScriptCompleted(tabId) else { return nil }
+    // The pager is always "running" while it holds the screen, so the generic
+    // live-process check would prompt on every file the user closes.
+    guard !fileViewerTabs.contains(tabId) else { return nil }
     // A woken surface reports "not at a prompt" until the zmx replay lands, so a
     // dormant tab always confirms.
     guard dormantTabLayouts[tabId] == nil else { return .dormant }
@@ -1156,6 +1166,7 @@ final class WorktreeTerminalState {
   func closeTab(_ tabId: TerminalTabID, focusing: Bool = true) {
     cancelHibernationTimer(for: tabId)
     removeFromPendingClose(tabId: tabId)
+    fileViewerTabs.remove(tabId)
     let closedBlockingKind = blockingScripts.removeValue(forKey: tabId)
     cleanupBlockingScriptLaunchDirectory(for: tabId)
     // Clear lingering tab tracking for completed or non-blocking tabs.
@@ -2855,6 +2866,11 @@ final class WorktreeTerminalState {
     return isBlockingScriptCompleted(tabId)
   }
 
+  private func isFileViewerSurface(_ surfaceID: UUID) -> Bool {
+    guard let tabId = tabID(containing: surfaceID) else { return false }
+    return fileViewerTabs.contains(tabId)
+  }
+
   private func updateRunningState(for tabId: TerminalTabID) {
     guard trees[tabId] != nil else { return }
     emitTabProjection(for: tabId)
@@ -3129,7 +3145,8 @@ final class WorktreeTerminalState {
     if needsConfirmation,
       isExplicitClose,
       settingsFile.global.confirmCloseSurface,
-      !isFrozenBlockingScriptSurface(view.id)
+      !isFrozenBlockingScriptSurface(view.id),
+      !isFileViewerSurface(view.id)
     {
       pendingCloseConfirmation = .surface(view.id)
       return
