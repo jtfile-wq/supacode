@@ -11,9 +11,15 @@ struct WorktreeStatusInspectorContainer: View {
   let pullRequest: GithubPullRequest?
   let repositoriesStore: StoreOf<RepositoriesFeature>
   let terminalManager: WorktreeTerminalManager
+  /// Optional because the detail view's selection is: no row selected means no
+  /// tree to show.
+  let worktree: Worktree?
+  let fileTreeManager: WorktreeFileTreeManager
+  let filesChangedToken: Int
   let onSelectNotification: (Worktree.ID, WorktreeTerminalNotification) -> Void
   let onSelectSurface: (Worktree.ID, UUID) -> Void
   let onPullRequestAction: (RepositoriesFeature.PullRequestAction) -> Void
+  let onOpenFile: (URL) -> Void
 
   var body: some View {
     Group {
@@ -25,6 +31,21 @@ struct WorktreeStatusInspectorContainer: View {
           isCheckingPullRequest: isCheckingPullRequest,
           onPullRequestAction: onPullRequestAction
         )
+      case .files:
+        if let worktree {
+          WorktreeFilesInspectorView(
+            worktree: worktree,
+            manager: fileTreeManager,
+            refreshToken: filesChangedToken,
+            onOpenFile: onOpenFile
+          )
+        } else {
+          ContentUnavailableView(
+            "No Worktree",
+            systemImage: "folder",
+            description: Text("Select a worktree to browse its files.")
+          )
+        }
       case .notifications:
         WorktreeNotificationsInspectorView(
           repositoriesStore: repositoriesStore,

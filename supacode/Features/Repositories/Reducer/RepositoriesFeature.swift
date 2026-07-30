@@ -82,6 +82,7 @@ nonisolated struct WorktreeCreationProgressUpdateThrottle {
 /// Which status pane the detail inspector shows when presented; presentation is tracked by `inspectorPresented`.
 enum WorktreeInspectorPane: Hashable, Sendable {
   case git
+  case files
   case notifications
 }
 
@@ -193,6 +194,9 @@ struct RepositoriesFeature {
     // leave the column empty when dragged back open.
     var inspectorPresented = false
     var inspectorPane: WorktreeInspectorPane = .git
+    /// Bumped per worktree whenever the file watcher reports a change, so the
+    /// files inspector can re-read the tree without its own watcher.
+    var filesChangedToken: [Worktree.ID: Int] = [:]
     var githubIntegrationAvailability: GithubIntegrationAvailability = .unknown
     var pendingPullRequestRefreshByRepositoryID: [Repository.ID: PendingPullRequestRefresh] = [:]
     var inFlightPullRequestRefreshRepositoryIDs: Set<Repository.ID> = []
@@ -3071,6 +3075,7 @@ struct RepositoriesFeature {
           guard let worktree = state.worktree(for: worktreeID) else {
             return .none
           }
+          state.filesChangedToken[worktreeID, default: 0] += 1
           let worktreeURL = worktree.workingDirectory
           let gitClient = gitClient(for: worktree)
           return .run { send in
