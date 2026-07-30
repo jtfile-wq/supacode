@@ -15,6 +15,9 @@ struct WorktreeDetailView: View {
   let terminalManager: WorktreeTerminalManager
   @Shared(.appStorage("worktreeRowHideSubtitleOnMatch")) private var hideSubtitleOnMatch = true
   @Shared(.settingsFile) private var settingsFile: SettingsFile
+  /// One manager for the whole detail view, so each worktree's tree and its
+  /// expansion state survive switching between sidebar rows.
+  @State private var fileTreeManager = WorktreeFileTreeManager()
   private var agentBadgesEnabled: Bool { settingsFile.global.agentPresenceBadgesEnabled }
 
   var body: some View {
@@ -103,21 +106,11 @@ struct WorktreeDetailView: View {
         set: { repositoriesStore.send(.setInspectorPresented($0)) }
       )
     ) {
-      WorktreeStatusInspectorContainer(
-        pane: inspectorPane,
-        isFolder: selectedRow?.isFolder == true,
+      statusInspector(
+        state: state,
         isCheckingPullRequest: isCheckingPullRequest,
-        pullRequest: inspectorPullRequest,
-        repositoriesStore: repositoriesStore,
-        terminalManager: terminalManager,
-        onSelectNotification: selectToolbarNotification,
-        onSelectSurface: selectToolbarSurface,
-        onPullRequestAction: { sendPullRequestAction($0, worktree: selectedWorktree) }
+        pullRequest: inspectorPullRequest
       )
-      .inspectorColumnWidth(min: 280, ideal: 320, max: 480)
-      // Match the inspector's accent to the terminal background; the appearance
-      // is forced inside `WorktreeStatusInspectorContainer`.
-      .tint(terminalManager.chromeOverlayTint())
     }
     // Reveal in Finder is local-only; Open can target a remote worktree when the
     // resolved editor can express the host. `resolvedSelection` (nil when it
@@ -134,6 +127,37 @@ struct WorktreeDetailView: View {
       hasRunningRunScript: state.hasRunningRunScript,
       resolvedSelection: resolvedSelection
     )
+  }
+
+  /// Split out of `detailBody` to keep that function under the lint's body-length
+  /// limit; it is otherwise the same inline inspector column as before.
+  private func statusInspector(
+    state: AppFeature.State,
+    isCheckingPullRequest: Bool,
+    pullRequest: GithubPullRequest?
+  ) -> some View {
+    let repositories = state.repositories
+    let selectedRow = repositories.selectedWorktreeSlice
+    let selectedWorktree = repositories.worktree(for: repositories.selectedWorktreeID)
+    return WorktreeStatusInspectorContainer(
+      pane: repositories.inspectorPane,
+      isFolder: selectedRow?.isFolder == true,
+      isCheckingPullRequest: isCheckingPullRequest,
+      pullRequest: pullRequest,
+      repositoriesStore: store.scope(state: \.repositories, action: \.repositories),
+      terminalManager: terminalManager,
+      worktree: selectedWorktree,
+      fileTreeManager: fileTreeManager,
+      filesChangedToken: selectedWorktree.flatMap { repositories.filesChangedToken[$0.id] } ?? 0,
+      onSelectNotification: selectToolbarNotification,
+      onSelectSurface: selectToolbarSurface,
+      onPullRequestAction: { sendPullRequestAction($0, worktree: selectedWorktree) },
+      onOpenFile: { _ in }
+    )
+    .inspectorColumnWidth(min: 280, ideal: 320, max: 480)
+    // Match the inspector's accent to the terminal background; the appearance
+    // is forced inside `WorktreeStatusInspectorContainer`.
+    .tint(terminalManager.chromeOverlayTint())
   }
 
   /// The selected worktree's pull request, shown in the inspector's git pane.
