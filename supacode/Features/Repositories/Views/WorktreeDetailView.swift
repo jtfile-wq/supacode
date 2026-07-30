@@ -799,6 +799,12 @@ struct WorktreeDetailView: View {
           foreground: chromeForeground,
           onActivate: { onActivateInspector(.git) }
         )
+        WorktreeFilesToolbarButton(
+          isSelected: inspectorPresented && inspectorPane == .files,
+          tint: chromeTint,
+          foreground: chromeForeground,
+          onActivate: { onActivateInspector(.files) }
+        )
         ToolbarNotificationsButtonHost(
           repositoriesStore: repositoriesStore,
           isSelected: inspectorPresented && inspectorPane == .notifications,
