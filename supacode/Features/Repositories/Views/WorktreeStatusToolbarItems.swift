@@ -149,3 +149,37 @@ struct WorktreeNotificationsToolbarButton: View {
     return controlActiveState == .key ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary)
   }
 }
+
+/// Trailing toolbar toggle for the file tree pane. Deliberately plainer than
+/// the git and bell buttons: there is no badge state to convey.
+struct WorktreeFilesToolbarButton: View {
+  let isSelected: Bool
+  // Selection highlight color, derived from the terminal background luminance
+  // so the lit state tracks the chrome instead of the system accent.
+  let tint: Color
+  // Concrete chrome foreground (white on dark, black on light) so the glyph
+  // doesn't change color when the toggle is selected.
+  let foreground: Color
+  let onActivate: () -> Void
+  @Shared(.settingsFile) private var settingsFile
+
+  var body: some View {
+    let shortcut = WorktreeDetailView.resolveShortcutDisplay(
+      for: AppShortcuts.toggleFilesInspector,
+      overrides: settingsFile.global.shortcutOverrides
+    )
+    Toggle(isOn: Binding(get: { isSelected }, set: { _ in onActivate() })) {
+      if isSelected {
+        Label("Files", systemImage: "list.bullet.indent")
+          .foregroundStyle(foreground)
+      } else {
+        // No foreground so the resting glyph matches the other toolbar buttons
+        // exactly, including the fade when the window isn't key.
+        Label("Files", systemImage: "list.bullet.indent")
+      }
+    }
+    .tint(tint)
+    .help("Toggle Files Inspector (\(shortcut))")
+    .accessibilityLabel("Files")
+  }
+}
