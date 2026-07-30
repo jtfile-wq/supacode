@@ -667,6 +667,66 @@ final class WorktreeTerminalState {
     onBlockingScriptCompleted?(kind, 1, nil)
   }
 
+  /// Opens `url` in a new tab running a pager. This is an ordinary terminal tab
+  /// with an explicit command: `resolveLaunch` wraps an explicit command
+  /// directly, with no shell resolution or integration, which is exactly what a
+  /// read-only viewer wants. `bypassZmx` because a viewer has no reason to
+  /// survive app quit, and a zmx session per opened file would be churn.
+  ///
+  /// Not a blocking-script tab: those carry no-split and readonly-after-
+  /// completion guardrails a viewer shouldn't inherit.
+  @discardableResult
+  func openFileViewerTab(url: URL) -> TerminalTabID? {
+    guard FileManager.default.fileExists(atPath: url.path(percentEncoded: false)) else {
+      // The agent may have moved or deleted it since the tree was listed.
+      // Opening a pager on a missing path would just produce a dead tab.
+      return nil
+    }
+    return createTab(
+      TabCreation(
+        title: url.lastPathComponent,
+        icon: "doc.text",
+        isTitleLocked: true,
+        command: Self.pagerCommand(for: url),
+        initialInput: nil,
+        activation: .focused,
+        inheritingFromSurfaceId: currentFocusedSurfaceId(),
+        context: GHOSTTY_SURFACE_CONTEXT_TAB,
+        tabID: nil,
+        bypassZmx: true
+      )
+    )
+  }
+
+  private static func pagerCommand(for url: URL) -> String {
+    // Same single-quote escaping as `remoteDefaultShellCommand`: the command
+    // string is re-parsed by a shell, so the path has to survive spaces.
+    let quoted = "'" + url.path(percentEncoded: false).replacing("'", with: "'\\''") + "'"
+    if let bat = batExecutable {
+      return "\(bat) --style=numbers,header --paging=always --color=always -- \(quoted)"
+    }
+    return "/usr/bin/less -R -- \(quoted)"
+  }
+
+  /// Resolved once per launch. Every tree click would otherwise re-walk PATH
+  /// stat-ing candidates, on the main actor.
+  private static let batExecutable: String? = resolveExecutable("bat")
+
+  /// Looks `name` up on PATH without spawning a subprocess. The Homebrew
+  /// directories are appended explicitly because an app launched from Finder
+  /// does not inherit a login shell's PATH.
+  private static func resolveExecutable(_ name: String) -> String? {
+    let fileManager = FileManager.default
+    let inherited = ProcessInfo.processInfo.environment["PATH"] ?? ""
+    let directories =
+      inherited.split(separator: ":").map(String.init) + ["/opt/homebrew/bin", "/usr/local/bin"]
+    for directory in directories {
+      let candidate = directory + "/" + name
+      if fileManager.isExecutableFile(atPath: candidate) { return candidate }
+    }
+    return nil
+  }
+
   private struct TabCreation: Equatable {
     let title: String
     let icon: String?

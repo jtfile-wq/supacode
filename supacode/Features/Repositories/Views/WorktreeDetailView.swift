@@ -152,7 +152,18 @@ struct WorktreeDetailView: View {
       onSelectNotification: selectToolbarNotification,
       onSelectSurface: selectToolbarSurface,
       onPullRequestAction: { sendPullRequestAction($0, worktree: selectedWorktree) },
-      onOpenFile: { _ in }
+      onOpenFile: { url in
+        guard let selectedWorktree else { return }
+        let opened = terminalManager.state(for: selectedWorktree).openFileViewerTab(url: url)
+        if opened == nil {
+          // Listed but gone by the time it was clicked, which is likely while an
+          // agent is mid-refactor. Re-read the tree rather than leaving a row
+          // that silently does nothing.
+          Task {
+            await fileTreeManager.state(for: selectedWorktree).load(worktree: selectedWorktree)
+          }
+        }
+      }
     )
     .inspectorColumnWidth(min: 280, ideal: 320, max: 480)
     // Match the inspector's accent to the terminal background; the appearance
