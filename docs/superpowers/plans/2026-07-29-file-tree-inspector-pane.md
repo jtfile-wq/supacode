@@ -11,6 +11,7 @@
 ## Global Constraints
 
 - Design spec: `docs/superpowers/specs/2026-07-29-file-tree-inspector-pane-design.md`. Read it before starting.
+- **Read the repo's own `CLAUDE.md` before writing code.** Two of its rules bind directly on this work: ":31 Prefer Swift-native APIs over Foundation where they exist (e.g. `replacing()` not `replacingOccurrences()`)" and ":29 When a new logic changes in the Reducer, always add tests."
 - Branch: `file-tree-inspector-pane`, based on `upstream/main` @ `3ec6fb80`.
 - **No commit may list an AI as author or co-author.** `CONTRIBUTING.md` forbids it. Never add a `Co-Authored-By` trailer in this repo.
 - **Prefer additive edits.** This patch is rebased onto upstream on every release. A new enum case or a new file rebases cleanly; a rewritten function does not. Where an existing function must change, keep the hunk as small as possible.
@@ -198,10 +199,13 @@ git commit -m "feat: add FileTree node model and path folding"
 
 **Files:**
 - Modify: `supacode/Clients/Git/GitClient.swift` (add two `GitOperation` cases near :21, two methods near :575 beside `untrackedFileCount`)
+- Modify: `supacode/Clients/Repositories/GitClientDependency.swift` (two closure properties near :29, two `make(shell:)` entries near :105, two `testValue` stubs near :152)
 
 **Interfaces:**
 - Consumes: `FileTreeNode.Status` from Task 1.
-- Produces: `GitClient.listFiles(for: URL) async throws -> [String]` and `GitClient.fileStatuses(for: URL) async throws -> [String: FileTreeNode.Status]`.
+- Produces: `GitClient.listFiles(for: URL) async throws -> [String]` and `GitClient.fileStatuses(for: URL) async throws -> [String: FileTreeNode.Status]`, both exposed on `GitClientDependency` under the same names.
+
+**Critical:** nothing in the app calls `GitClient` directly. Every consumer goes through `GitClientDependency`, a struct of explicit `@Sendable` closures registered as the `DependencyKey`. It has no forwarding or dynamic dispatch, so a method added only to `GitClient` is invisible to `@Dependency(\.gitClient)`. Both layers must be edited or Task 3 will not compile.
 
 - [ ] **Step 1: Add the operation cases**
 
@@ -254,12 +258,41 @@ In the same file, immediately after `untrackedFileCount(for:)` (ends :575):
   }
 ```
 
-- [ ] **Step 3: Verify it builds**
+- [ ] **Step 3: Expose both methods on the dependency**
+
+In `supacode/Clients/Repositories/GitClientDependency.swift`, three edits.
+
+Closure properties, after `var untrackedFileCount` (:29):
+
+```swift
+  var listFiles: @Sendable (URL) async throws -> [String]
+  var fileStatuses: @Sendable (URL) async throws -> [String: FileTreeNode.Status]
+```
+
+Live wiring in `make(shell:)`, after the `untrackedFileCount` entry (:105), matching the one-line style used there:
+
+```swift
+      listFiles: { try await GitClient(shell: shell).listFiles(for: $0) },
+      fileStatuses: { try await GitClient(shell: shell).fileStatuses(for: $0) },
+```
+
+Test stubs in `testValue` (:152), which starts from `liveValue` and overrides only what would otherwise shell out:
+
+```swift
+    // `liveValue` shells out to real git; fixtures use fake paths, so default
+    // to an empty tree rather than a thrown error.
+    value.listFiles = { _ in [] }
+    value.fileStatuses = { _ in [:] }
+```
+
+Property order in the struct, the `make(shell:)` argument order, and the memberwise initializer must all stay in sync. Add both entries in the same relative position in each.
+
+- [ ] **Step 4: Verify it builds**
 
 Run: `make build-app`
 Expected: build succeeds.
 
-- [ ] **Step 4: Sanity check the git invocations by hand**
+- [ ] **Step 5: Sanity check the git invocations by hand**
 
 Run: `git -C ~/dev/supacode ls-files --cached --others --exclude-standard -z | tr '\0' '\n' | head`
 Expected: a list of repo-relative paths with no `.build/` or `ThirdParty/ghostty` contents in it.
@@ -267,11 +300,11 @@ Expected: a list of repo-relative paths with no `.build/` or `ThirdParty/ghostty
 Run: `git -C ~/dev/supacode status --porcelain -z | tr '\0' '\n' | head`
 Expected: status lines, or empty output on a clean tree.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 make check
-git add supacode/Clients/Git/GitClient.swift
+git add supacode/Clients/Git/GitClient.swift supacode/Clients/Repositories/GitClientDependency.swift
 git commit -m "feat: add git file listing and per-file status to GitClient"
 ```
 
@@ -346,7 +379,7 @@ struct WorktreeFileTreeManagerTests {
     #expect(!state.nodes.contains { $0.name == ".secret" })
   }
 
-  @Test func unreadableDirectoryRecordsAFailureWithoutClearingTheTree() async throws {
+  @Test func unreadableDirectoryStaysCollapsedAndRetriesOnTheNextClick() async throws {
     let root = try makeTempTree()
     defer { try? FileManager.default.removeItem(at: root) }
     let state = WorktreeFileTreeState()
@@ -358,6 +391,45 @@ struct WorktreeFileTreeManagerTests {
     await state.expandFolder(missing, root: root)
 
     #expect(state.nodes.map(\.name) == ["nested", "a.txt"])
+    #expect(!state.expanded.contains("gone"))
+    #expect(state.didFailToRead(missing))
+
+    // Second attempt must retry rather than take an "already loaded" fast path
+    // that would mark the row expanded with no children.
+    await state.expandFolder(missing, root: root)
+
+    #expect(!state.expanded.contains("gone"))
+    #expect(state.didFailToRead(missing))
+  }
+
+  @Test func refreshRestoresPreviouslyExpandedDirectories() async throws {
+    let root = try makeTempTree()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let state = WorktreeFileTreeState()
+    await state.loadFolder(at: root)
+    await state.expandFolder(state.nodes[0], root: root)
+
+    // A refresh rebuilds from the root; the open directory must come back
+    // populated, not open-and-empty.
+    await state.loadFolder(at: root)
+
+    #expect(state.expanded.contains("nested"))
+    #expect(state.nodes[0].children.map(\.name) == ["b.txt"])
+  }
+
+  @Test func refreshPicksUpAFileAddedInsideAnExpandedDirectory() async throws {
+    let root = try makeTempTree()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let state = WorktreeFileTreeState()
+    await state.loadFolder(at: root)
+    await state.expandFolder(state.nodes[0], root: root)
+    try "three".write(
+      to: root.appendingPathComponent("nested/c.txt"), atomically: true, encoding: .utf8
+    )
+
+    await state.loadFolder(at: root)
+
+    #expect(state.nodes[0].children.map(\.name) == ["b.txt", "c.txt"])
   }
 }
 ```
@@ -385,51 +457,90 @@ import Observation
 @MainActor
 @Observable
 final class WorktreeFileTreeState {
+  enum Source {
+    case git
+    case folder
+  }
+
   private(set) var nodes: [FileTreeNode] = []
   private(set) var loadFailure: String?
   private(set) var isLoading = false
+  private(set) var source: Source = .folder
   /// Keyed by `relativePath`, so expansion survives a refresh that rebuilds nodes.
   var expanded: Set<String> = []
   /// Folder rows only: directories already read, so re-expanding is free.
   private var loadedDirectories: Set<String> = []
+  /// Directories whose last read failed. Kept apart from `loadedDirectories` so
+  /// a retry actually retries instead of taking the already-loaded fast path.
+  private var failedDirectories: Set<String> = []
 
   @ObservationIgnored @Dependency(\.gitClient) private var gitClient
 
   func load(worktree: Worktree) async {
-    guard worktree.host == nil else {
-      // Remote worktrees need remote command building on both the listing and
-      // the pager. Out of scope; the view shows an unavailable state.
+    // `localWorkingDirectory` is `URL?`, nil for remote worktrees. Remote needs
+    // remote command building on both the listing and the pager, which is out
+    // of scope, so both conditions collapse into one guard.
+    guard worktree.host == nil, let root = worktree.localWorkingDirectory else {
       nodes = []
       loadFailure = "Remote worktrees aren't supported yet."
       return
     }
     isLoading = true
     defer { isLoading = false }
-    loadedDirectories = []
 
-    if worktree.kind == .git {
-      do {
-        async let paths = gitClient.listFiles(for: worktree.workingDirectory)
-        async let statuses = gitClient.fileStatuses(for: worktree.workingDirectory)
-        let visible = try await paths.filter { path in
-          !path.split(separator: "/").contains { $0.hasPrefix(".") }
-        }
-        nodes = FileTree.build(from: visible, statuses: try await statuses)
-        loadFailure = nil
-        return
-      } catch {
-        // A broken git environment (an unaccepted Xcode license is the one the
-        // app already models) should still give a browsable tree.
-        loadFailure = nil
-      }
-    }
-    await loadFolder(at: worktree.localWorkingDirectory)
+    if worktree.kind == .git, await loadGit(root: root) { return }
+    await loadFolder(at: root)
   }
 
-  /// Folder source: read exactly one directory level.
+  /// Returns false when the *listing* failed, so the caller falls back to the
+  /// folder source. A broken git environment (an unaccepted Xcode license is
+  /// the one the app already models) should still give a browsable tree.
+  private func loadGit(root: URL) async -> Bool {
+    let paths: [String]
+    do {
+      paths = try await gitClient.listFiles(root)
+    } catch {
+      return false
+    }
+    // Status is only the tint, so it gets its own failure handling. A transient
+    // error here (a concurrent agent holding index.lock is routine in this app)
+    // must not discard a good file list and drop the pane to a listing that
+    // ignores .gitignore.
+    let statuses = (try? await gitClient.fileStatuses(root)) ?? [:]
+    let visible = paths.filter { path in
+      !path.split(separator: "/").contains { $0.hasPrefix(".") }
+    }
+    nodes = await Self.build(from: visible, statuses: statuses)
+    source = .git
+    loadedDirectories = []
+    failedDirectories = []
+    loadFailure = nil
+    return true
+  }
+
+  /// Folder source: read the root, then re-read every directory the user had
+  /// open. Without the second pass a refresh leaves expanded rows rendering
+  /// open and empty, since folder nodes always come back with no children.
   func loadFolder(at root: URL) async {
     do {
-      nodes = try Self.readDirectory(root, prefix: "")
+      var tree = try await Self.readDirectory(root, prefix: "")
+      source = .folder
+      loadedDirectories = []
+      failedDirectories = []
+      // Shallowest first, so a parent's children exist before a child splices in.
+      let byDepth = expanded.sorted {
+        $0.filter { $0 == "/" }.count < $1.filter { $0 == "/" }.count
+      }
+      for path in byDepth {
+        let url = root.appending(path: path, directoryHint: .isDirectory)
+        guard let children = try? await Self.readDirectory(url, prefix: path) else {
+          failedDirectories.insert(path)
+          continue
+        }
+        tree = Self.replacingChildren(in: tree, at: path, with: children)
+        loadedDirectories.insert(path)
+      }
+      nodes = tree
       loadFailure = nil
     } catch {
       nodes = []
@@ -443,54 +554,79 @@ final class WorktreeFileTreeState {
       expanded.remove(node.relativePath)
       return
     }
-    // Git worktrees are already fully loaded; only folder rows need to read.
-    if worktree.kind == .git, worktree.host == nil, loadFailure == nil, !node.children.isEmpty {
+    // The git source lists in one shot, so children are already in memory.
+    guard source == .folder, let root = worktree.localWorkingDirectory else {
       expanded.insert(node.relativePath)
       return
     }
-    await expandFolder(node, root: worktree.localWorkingDirectory)
+    await expandFolder(node, root: root)
   }
 
   /// Folder source: read `node`'s children and splice them in.
   func expandFolder(_ node: FileTreeNode, root: URL) async {
-    guard !loadedDirectories.contains(node.relativePath) else {
+    if loadedDirectories.contains(node.relativePath) {
       expanded.insert(node.relativePath)
       return
     }
     let url = root.appending(path: node.relativePath, directoryHint: .isDirectory)
     do {
-      let children = try Self.readDirectory(url, prefix: node.relativePath)
+      let children = try await Self.readDirectory(url, prefix: node.relativePath)
       nodes = Self.replacingChildren(in: nodes, at: node.relativePath, with: children)
       loadedDirectories.insert(node.relativePath)
+      failedDirectories.remove(node.relativePath)
       expanded.insert(node.relativePath)
     } catch {
-      // One unreadable directory must not empty the pane. Leave the tree as it
-      // is and leave the row collapsed.
-      loadedDirectories.insert(node.relativePath)
+      // Record the failure but do NOT mark it loaded. Marking it would send the
+      // next click down the already-loaded fast path, expanding the row to
+      // nothing and never retrying. One bad directory must not empty the pane.
+      failedDirectories.insert(node.relativePath)
     }
   }
 
-  private static func readDirectory(_ url: URL, prefix: String) throws -> [FileTreeNode] {
-    let entries = try FileManager.default.contentsOfDirectory(
-      at: url,
-      includingPropertiesForKeys: [.isDirectoryKey],
-      options: [.skipsHiddenFiles]
-    )
-    let nodes = try entries.map { entry -> FileTreeNode in
-      let isDirectory = try entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory ?? false
-      let name = entry.lastPathComponent
-      return FileTreeNode(
-        relativePath: prefix.isEmpty ? name : prefix + "/" + name,
-        name: name,
-        isDirectory: isDirectory,
-        status: .unchanged,
-        children: []
+  /// Drives the row's warning affordance.
+  func didFailToRead(_ node: FileTreeNode) -> Bool {
+    failedDirectories.contains(node.relativePath)
+  }
+
+  /// `nonisolated` and hopped off the main actor: enumerating a large directory
+  /// blocks, and this runs while the pane is on screen.
+  private nonisolated static func readDirectory(
+    _ url: URL,
+    prefix: String
+  ) async throws -> [FileTreeNode] {
+    try await Task.detached(priority: .userInitiated) {
+      let entries = try FileManager.default.contentsOfDirectory(
+        at: url,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles]
       )
-    }
-    return nodes.sorted { lhs, rhs in
-      if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
-      return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
-    }
+      let nodes = try entries.map { entry -> FileTreeNode in
+        let isDirectory = try entry.resourceValues(forKeys: [.isDirectoryKey]).isDirectory ?? false
+        let name = entry.lastPathComponent
+        return FileTreeNode(
+          relativePath: prefix.isEmpty ? name : prefix + "/" + name,
+          name: name,
+          isDirectory: isDirectory,
+          status: .unchanged,
+          children: []
+        )
+      }
+      return nodes.sorted { lhs, rhs in
+        if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
+        return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+      }
+    }.value
+  }
+
+  /// Same reason: a big repo's file list is a real recursive fold plus a
+  /// localized sort at every level, and the main thread shouldn't wear it.
+  private nonisolated static func build(
+    from paths: [String],
+    statuses: [String: FileTreeNode.Status]
+  ) async -> [FileTreeNode] {
+    await Task.detached(priority: .userInitiated) {
+      FileTree.build(from: paths, statuses: statuses)
+    }.value
   }
 
   private static func replacingChildren(
@@ -528,15 +664,19 @@ final class WorktreeFileTreeManager {
 
 - [ ] **Step 4: Reconcile the implementation against the real `Worktree` API**
 
-`load(worktree:)` above references `worktree.kind`, `worktree.host`, `worktree.workingDirectory`, and `worktree.localWorkingDirectory`. All four are documented on `Worktree` (`supacode/Domain/Worktree.swift:9-16`), but confirm the exact spelling of the `RepositoryKind` case for a git worktree before building:
+`load(worktree:)` references `worktree.kind`, `worktree.host`, and `worktree.localWorkingDirectory`. Confirm the `RepositoryKind` case for a git worktree before building. It lives in `RepositoryIdentity.swift`, not a file of its own:
 
-Run: `grep -n "enum RepositoryKind" -A 6 supacode/Domain/RepositoryKind.swift`
-Expected: the case list. If the git case is not literally `.git`, update the two comparisons in `load(worktree:)` and `toggle(_:worktree:)` to match.
+Run: `grep -n "enum RepositoryKind" -A 6 supacode/Domain/RepositoryIdentity.swift`
+Expected: the case list, with `.git` at :53. If the case is spelled differently, update the comparison in `load(worktree:)`.
+
+Note that `localWorkingDirectory` is `URL?` (`Worktree.swift:38`), which is why `load` unwraps it in the same guard as the `host == nil` check. Both are driven by the same `.local` case of `WorktreeLocation`, so a local worktree always has one.
 
 Also confirm how the app resolves `gitClient` for a worktree. `RepositoriesFeature` uses a `gitClient(for: worktree)` helper rather than the bare dependency:
 
 Run: `grep -n "func gitClient(for" -A 8 supacode/Features/Repositories/Reducer/RepositoriesFeature.swift`
 Expected: the helper. If it exists and does more than return `@Dependency(\.gitClient)` (for example picking a remote-aware client), use the same resolution here instead of the bare dependency.
+
+Finally, note the call style: `GitClientDependency`'s members are closures, so they are called positionally as `gitClient.listFiles(root)`, with no argument label, unlike `GitClient.listFiles(for:)`.
 
 - [ ] **Step 5: Run the tests to verify they pass**
 
@@ -635,16 +775,50 @@ At :516, in the group listing:
 
 `⌘⌥F` is unbound in this file today (verified: no other `key: "f"` entry), and it sits alongside `⌘⌥G` for git and `⌘⌥N` for notifications.
 
-- [ ] **Step 5: Verify it builds and nothing regressed**
+- [ ] **Step 5: Add the reducer test**
+
+`CLAUDE.md:29` says "When a new logic changes in the Reducer, always add tests". This task changes reducer state, so it needs one. `supacodeTests/RepositoriesFeatureTests.swift:16` already has `toggleInspectorPaneOpensSwapsAndCloses` covering `.git` and `.notifications`; extend that file with a case for the new pane and the new token.
+
+Add to `RepositoriesFeatureTests`:
+
+```swift
+  @Test func toggleInspectorPaneHandlesTheFilesPane() async {
+    let store = TestStore(initialState: RepositoriesFeature.State()) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.sidebarStructureAutoRecompute = false
+    }
+
+    // Opens on `.files` from the default `.git` pane.
+    await store.send(.toggleInspectorPane(.files)) {
+      $0.inspectorPresented = true
+      $0.inspectorPane = .files
+    }
+    // Swapping away and back keeps the same open/close semantics as the others.
+    await store.send(.toggleInspectorPane(.git)) {
+      $0.inspectorPane = .git
+    }
+    await store.send(.toggleInspectorPane(.files)) {
+      $0.inspectorPane = .files
+    }
+    await store.send(.toggleInspectorPane(.files)) {
+      $0.inspectorPresented = false
+    }
+  }
+```
+
+The token bump is exercised through the watcher event. Match how the existing suite drives `worktreeInfoWatcher` events (`grep -n "filesChanged\|worktreeInfoWatcher" supacodeTests/*.swift`) and assert that a `.filesChanged` for a known worktree increments `filesChangedToken[worktreeID]` from absent to 1, and again to 2 on a second event. If no existing test drives that watcher, assert the state transition directly through whatever action the reducer exposes for it rather than inventing new plumbing.
+
+- [ ] **Step 6: Verify it builds and nothing regressed**
 
 Run: `make build-app && make test`
-Expected: build succeeds; the existing suite still passes. Any switch over `WorktreeInspectorPane` that is now non-exhaustive will fail the build here and gets fixed in Task 6.
+Expected: build succeeds; the existing suite still passes plus the new case. Any switch over `WorktreeInspectorPane` that is now non-exhaustive will fail the build here and gets fixed in Task 6.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 make check
-git add SupacodeSettingsShared/App/AppShortcuts.swift supacode/Features/Repositories/Reducer/RepositoriesFeature.swift
+git add SupacodeSettingsShared/App/AppShortcuts.swift supacode/Features/Repositories/Reducer/RepositoriesFeature.swift supacodeTests/RepositoriesFeatureTests.swift
 git commit -m "feat: add files inspector pane case, refresh token, and shortcut"
 ```
 
@@ -706,10 +880,19 @@ struct WorktreeFilesInspectorView: View {
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .task(id: refreshToken) {
+    .task(id: FileTreeLoadKey(worktreeID: worktree.id, token: refreshToken)) {
       await state.load(worktree: worktree)
     }
   }
+}
+
+/// `.task(id:)` restarts only when the id *value* changes. Keying on the token
+/// alone would skip the load when switching between two worktrees that both sit
+/// at token 0, which is every pair of worktrees nothing has written to yet: the
+/// pane would stay on its empty state until a watcher event happened to arrive.
+private struct FileTreeLoadKey: Hashable {
+  let worktreeID: Worktree.ID
+  let token: Int
 }
 
 /// Rows are emitted recursively rather than with `OutlineGroup` so expansion
@@ -724,11 +907,18 @@ private struct FileTreeRows: View {
 
   var body: some View {
     ForEach(nodes) { node in
-      FileTreeRow(node: node, depth: depth, isExpanded: state.expanded.contains(node.relativePath)) {
+      FileTreeRow(
+        node: node,
+        depth: depth,
+        isExpanded: state.expanded.contains(node.relativePath),
+        didFail: state.didFailToRead(node)
+      ) {
         if node.isDirectory {
           Task { await state.toggle(node, worktree: worktree) }
-        } else {
-          onOpenFile(worktree.localWorkingDirectory.appending(path: node.relativePath))
+        } else if let root = worktree.localWorkingDirectory {
+          // `localWorkingDirectory` is `URL?`; a nil root means remote, which
+          // never renders rows because `load` bails to the unavailable state.
+          onOpenFile(root.appending(path: node.relativePath))
         }
       }
       if node.isDirectory, state.expanded.contains(node.relativePath) {
@@ -744,6 +934,9 @@ private struct FileTreeRow: View {
   let node: FileTreeNode
   let depth: Int
   let isExpanded: Bool
+  /// Last read of this directory failed. Surfaced so an unreadable folder reads
+  /// as unreadable rather than as empty.
+  let didFail: Bool
   let activate: () -> Void
 
   var body: some View {
@@ -764,6 +957,12 @@ private struct FileTreeRow: View {
           .lineLimit(1)
           .truncationMode(.middle)
         Spacer(minLength: 0)
+        if didFail {
+          Image(systemName: "exclamationmark.triangle")
+            .font(.system(size: 9))
+            .foregroundStyle(.secondary)
+            .help("Can't read this folder.")
+        }
       }
       .padding(.leading, CGFloat(depth) * 11 + 8)
       .padding(.trailing, 8)
@@ -784,10 +983,11 @@ private struct FileTreeRow: View {
 
   private var accessibilityLabel: String {
     let kind = node.isDirectory ? "Folder" : "File"
+    let suffix = didFail ? ", unreadable" : ""
     switch node.status {
-    case .unchanged: return "\(kind), \(node.name)"
-    case .modified: return "\(kind), \(node.name), modified"
-    case .untracked: return "\(kind), \(node.name), untracked"
+    case .unchanged: return "\(kind), \(node.name)\(suffix)"
+    case .modified: return "\(kind), \(node.name), modified\(suffix)"
+    case .untracked: return "\(kind), \(node.name), untracked\(suffix)"
     }
   }
 }
@@ -795,26 +995,36 @@ private struct FileTreeRow: View {
 
 - [ ] **Step 2: Wire it into the inspector switch**
 
-In `supacode/Features/Repositories/Views/WorktreeStatusInspector.swift`, add stored properties to `WorktreeStatusInspectorContainer` beside the existing ones (:9-17):
+In `supacode/Features/Repositories/Views/WorktreeStatusInspector.swift`, add stored properties to `WorktreeStatusInspectorContainer` beside the existing ones (:8-16):
 
 ```swift
-  let worktree: Worktree
+  let worktree: Worktree?
   let fileTreeManager: WorktreeFileTreeManager
   let filesChangedToken: Int
   let onOpenFile: (URL) -> Void
 ```
 
-and the new branch in the switch (:19), between `.git` and `.notifications`:
+and the new branch in the switch (:20), between `.git` and `.notifications`. `worktree` is optional here because the container's call site binds an optional selection:
 
 ```swift
       case .files:
-        WorktreeFilesInspectorView(
-          worktree: worktree,
-          manager: fileTreeManager,
-          refreshToken: filesChangedToken,
-          onOpenFile: onOpenFile
-        )
+        if let worktree {
+          WorktreeFilesInspectorView(
+            worktree: worktree,
+            manager: fileTreeManager,
+            refreshToken: filesChangedToken,
+            onOpenFile: onOpenFile
+          )
+        } else {
+          ContentUnavailableView(
+            "No Worktree",
+            systemImage: "folder",
+            description: Text("Select a worktree to browse its files.")
+          )
+        }
 ```
+
+which means the stored property added above is `let worktree: Worktree?`, not `Worktree`.
 
 - [ ] **Step 3: Fix the call site**
 
@@ -828,16 +1038,16 @@ Add the manager to the view that owns that call site, alongside its other view s
   @State private var fileTreeManager = WorktreeFileTreeManager()
 ```
 
-Then pass the four new arguments at the call site:
+Then pass the four new arguments at the call site. `selectedWorktree` is bound at `WorktreeDetailView.swift:33` as `repositories.worktree(for: repositories.selectedWorktreeID)`, which is **optional**, so both the argument and the token subscript need optional handling:
 
 ```swift
         worktree: selectedWorktree,
         fileTreeManager: fileTreeManager,
-        filesChangedToken: store.filesChangedToken[selectedWorktree.id] ?? 0,
+        filesChangedToken: selectedWorktree.flatMap { store.filesChangedToken[$0.id] } ?? 0,
         onOpenFile: { _ in }
 ```
 
-`selectedWorktree` is the name the surrounding view already uses for the displayed worktree (see `makeToolbarTitleContent` at :789); use whatever that scope actually calls it. Task 7 replaces the inert `onOpenFile` closure. Leaving it inert here keeps this task independently reviewable.
+Task 7 replaces the inert `onOpenFile` closure. Leaving it inert here keeps this task independently reviewable.
 
 - [ ] **Step 4: Build and look at it**
 
@@ -947,9 +1157,12 @@ Check each of these:
 1. A third icon appears in the trailing toolbar pill, between the branch icon and the bell.
 2. Clicking it opens the pane; clicking it again closes it. Same for `⌘⌥F`.
 3. On a git worktree row, the tree lists files, excludes `.build/` and other ignored paths, and excludes dotfiles.
-4. Modified files are orange and untracked files are green. Make a change with `touch supacode/Domain/FileTree.swift && echo "" >> README.md` and confirm the tint appears within about 5 seconds without touching the pane.
+4. Modified files are orange and untracked files are green. Make a change with `echo "" >> README.md` and confirm the tint appears within about 5 seconds without touching the pane.
 5. On a folder row, the tree lists the directory; expanding reads one level.
 6. "Toggle Files Inspector" appears in the menu with `⌘⌥F` next to it.
+7. **Regression check for the refresh key.** With the pane open, click between two worktrees that have never been modified in this session. The tree must repopulate for each one. If it sticks on "No Files", `FileTreeLoadKey` is not wired in and the pane is keyed on the token alone.
+8. **Regression check for expansion across refresh.** On a folder row, expand a couple of levels, then touch a file anywhere in that worktree and wait out the 5 second debounce. The expanded directories must still show their contents, not render open and empty.
+9. Point a folder row at a large directory and confirm opening the pane does not visibly stall the window, which is what the detached reads are for.
 
 - [ ] **Step 5: Commit**
 
@@ -1008,13 +1221,19 @@ In `supacode/Features/Terminal/Models/WorktreeTerminalState.swift`, after the bl
   }
 
   private static func pagerCommand(for url: URL) -> String {
-    let quoted =
-      "'" + url.path(percentEncoded: false).replacingOccurrences(of: "'", with: "'\\''") + "'"
-    if let bat = resolveExecutable("bat") {
+    // Single-quote escaping matches the existing convention in this file
+    // (`remoteDefaultShellCommand`, :2419). `replacing` rather than
+    // `replacingOccurrences` per CLAUDE.md:31.
+    let quoted = "'" + url.path(percentEncoded: false).replacing("'", with: "'\\''") + "'"
+    if let bat = batExecutable {
       return "\(bat) --style=numbers,header --paging=always --color=always -- \(quoted)"
     }
     return "/usr/bin/less -R -- \(quoted)"
   }
+
+  /// Resolved once per launch. Every tree click would otherwise re-walk PATH
+  /// stat-ing candidates, on the main actor.
+  private static let batExecutable: String? = resolveExecutable("bat")
 
   /// Looks `name` up on PATH without spawning a subprocess. The Homebrew
   /// directories are appended explicitly because an app launched from Finder
@@ -1051,14 +1270,15 @@ with a call through the terminal manager, matching how the view already reaches 
 
 ```swift
         onOpenFile: { url in
-          let opened = terminalManager.state(for: selectedWorktree) { false }
+          guard let worktree = selectedWorktree else { return }
+          let opened = terminalManager.state(for: worktree) { false }
             .openFileViewerTab(url: url)
           if opened == nil {
             // Listed but gone by the time it was clicked, which is likely while
             // an agent is mid-refactor. Re-read the tree rather than leaving a
             // row that silently does nothing.
             Task {
-              await fileTreeManager.state(for: selectedWorktree).load(worktree: selectedWorktree)
+              await fileTreeManager.state(for: worktree).load(worktree: worktree)
             }
           }
         }
@@ -1096,7 +1316,8 @@ git commit -m "feat: open files from the tree as pager tabs"
 After Task 7, the whole feature is in place. Final pass:
 
 - [ ] `make check` is clean.
-- [ ] `make test` passes, including the ten new cases.
+- [ ] `make test` passes, including the thirteen new cases (six in `FileTreeTests`, six in `WorktreeFileTreeManagerTests`, one in `RepositoriesFeatureTests`).
 - [ ] `git log --oneline upstream/main..HEAD` shows nine commits (seven from these tasks, plus the spec and plan docs) and no `Co-Authored-By` trailer on any of them.
-- [ ] `git diff --stat upstream/main..HEAD` shows fifteen files: eight modified, five created, plus the two docs.
+- [ ] `git diff --stat upstream/main..HEAD` shows seventeen files: ten modified, five created, plus the two docs.
 - [ ] The app builds and runs, and every manual check in Tasks 6 and 7 passes.
+- [ ] `grep -rn "replacingOccurrences" supacode` still returns nothing, per CLAUDE.md:31.
