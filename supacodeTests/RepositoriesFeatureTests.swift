@@ -59,6 +59,52 @@ struct RepositoriesFeatureTests {
     }
   }
 
+  @Test func toggleInspectorPaneHandlesTheFilesPane() async {
+    let store = TestStore(initialState: RepositoriesFeature.State()) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.sidebarStructureAutoRecompute = false
+    }
+
+    // Opens on `.files` from the default `.git` pane.
+    await store.send(.toggleInspectorPane(.files)) {
+      $0.inspectorPresented = true
+      $0.inspectorPane = .files
+    }
+    // Swapping away and back keeps the same open/close semantics as the others.
+    await store.send(.toggleInspectorPane(.git)) {
+      $0.inspectorPane = .git
+    }
+    await store.send(.toggleInspectorPane(.files)) {
+      $0.inspectorPane = .files
+    }
+    await store.send(.toggleInspectorPane(.files)) {
+      $0.inspectorPresented = false
+    }
+  }
+
+  @Test func filesChangedBumpsThePerWorktreeToken() async {
+    let worktree = makeWorktree(id: "/tmp/repo/main", name: "main")
+    let repository = makeRepository(id: "/tmp/repo", worktrees: [worktree])
+    let store = TestStore(initialState: makeState(repositories: [repository])) {
+      RepositoriesFeature()
+    } withDependencies: {
+      $0.sidebarStructureAutoRecompute = false
+      // Returning nil keeps the existing line-changes effect from emitting, so
+      // this test stays scoped to the token.
+      $0.gitClient.lineChanges = { _ in nil }
+    }
+
+    // The files inspector keys its reload on this token, so it has to move on
+    // every watcher event, not just the first.
+    await store.send(.worktreeInfoEvent(.filesChanged(worktreeID: worktree.id))) {
+      $0.filesChangedToken[worktree.id] = 1
+    }
+    await store.send(.worktreeInfoEvent(.filesChanged(worktreeID: worktree.id))) {
+      $0.filesChangedToken[worktree.id] = 2
+    }
+  }
+
   @Test func refreshWorktreesSetsRefreshingStateUntilLoadCompletes() async {
     let worktree = makeWorktree(id: "/tmp/repo/main", name: "main")
     let repository = makeRepository(id: "/tmp/repo", worktrees: [worktree])
