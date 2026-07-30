@@ -28,7 +28,10 @@ final class WorktreeFileTreeState {
   /// a retry actually retries instead of taking the already-loaded fast path.
   private var failedDirectories: Set<String> = []
 
-  @ObservationIgnored @Dependency(\.gitClient) private var gitClient
+  // Resolved by type rather than key path, matching `RepositoriesFeature`: the
+  // module defaults to MainActor isolation, which makes `\.gitClient` a
+  // non-Sendable key path.
+  @ObservationIgnored @Dependency(GitClientDependency.self) private var gitClient
 
   func load(worktree: Worktree) async {
     // `localWorkingDirectory` is `URL?`, nil for remote worktrees. Remote needs
