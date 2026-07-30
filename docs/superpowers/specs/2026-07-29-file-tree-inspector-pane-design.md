@@ -37,7 +37,7 @@ tree, remote worktrees, a search or filter field.
 
 ## Architecture
 
-Eight existing files change and four are added. Keeping that surface small is a design goal, not an
+Eight existing files change and five are added. Keeping that surface small is a design goal, not an
 accident: every line here is rebased against upstream on each release.
 
 ### Existing files
@@ -61,14 +61,16 @@ flat path list into nested nodes. Sort order is directories first, then case-ins
 is the only real logic in the feature and it is deliberately isolated so it can be tested without a
 repo, a filesystem, or a view.
 
-**`supacode/Features/Repositories/BusinessLogic/FileTreeLoader.swift`** owns the two sources and
-the cache. Git worktrees load eagerly in one shot; folder rows load one directory per expansion and
-memoize the result.
+**`supacode/Features/Repositories/BusinessLogic/WorktreeFileTreeManager.swift`** owns the two
+sources and the cache. Git worktrees load eagerly in one shot; folder rows load one directory per
+expansion and memoize the result. It exposes `state(for:)` keyed by worktree, mirroring
+`WorktreeTerminalManager`.
 
 **`supacode/Features/Repositories/Views/WorktreeFilesInspectorView.swift`** renders the tree with
 disclosure rows, applies the status tint, and calls back on file activation.
 
-**`supacodeTests/FileTreeTests.swift`** covers the builder, using `swift-testing` (`import Testing`,
+**`supacodeTests/FileTreeTests.swift`** and **`supacodeTests/WorktreeFileTreeManagerTests.swift`**
+cover the builder and the folder source respectively, using `swift-testing` (`import Testing`,
 `@Test`, `#expect`) to match the existing suite.
 
 ## Data flow
