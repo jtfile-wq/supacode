@@ -27,6 +27,10 @@ struct GitClientDependency: Sendable {
   var automaticWorktreeBaseRef: @Sendable (URL) async -> String?
   var ignoredFileCount: @Sendable (URL) async throws -> Int
   var untrackedFileCount: @Sendable (URL) async throws -> Int
+  /// Tracked plus untracked files honoring `.gitignore`, for the files inspector.
+  var listFiles: @Sendable (URL) async throws -> [String]
+  /// Modified / untracked status per root-relative path, for the tree tint.
+  var fileStatuses: @Sendable (URL) async throws -> [String: FileTreeNode.Status]
   var createWorktree:
     @Sendable (
       _ name: String,
@@ -106,6 +110,8 @@ extension GitClientDependency: DependencyKey {
       automaticWorktreeBaseRef: { await GitClient(shell: shell).automaticWorktreeBaseRef(for: $0) },
       ignoredFileCount: { try await GitClient(shell: shell).ignoredFileCount(for: $0) },
       untrackedFileCount: { try await GitClient(shell: shell).untrackedFileCount(for: $0) },
+      listFiles: { try await GitClient(shell: shell).listFiles(for: $0) },
+      fileStatuses: { try await GitClient(shell: shell).fileStatuses(for: $0) },
       createWorktree: { name, repoRoot, baseDirectory, copyIgnored, copyUntracked, baseRef in
         try await GitClient(shell: shell).createWorktree(
           named: name,
@@ -174,6 +180,10 @@ extension GitClientDependency: DependencyKey {
     value.cloneStream = { _, _, _, _ in
       AsyncThrowingStream { $0.finish() }
     }
+    // `liveValue` shells out to real git; fixtures use fake paths, so default to
+    // an empty tree instead of a thrown error.
+    value.listFiles = { _ in [] }
+    value.fileStatuses = { _ in [:] }
     return value
   }
 }

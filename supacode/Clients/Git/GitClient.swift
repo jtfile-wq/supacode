@@ -20,6 +20,8 @@ enum GitOperation: String {
   case symbolicHeadRef = "symbolic_head_ref"
   case ignoredFileCount = "ignored_file_count"
   case untrackedFileCount = "untracked_file_count"
+  case fileList = "file_list"
+  case fileStatus = "file_status"
   case branchDelete = "branch_delete"
   case branchRename = "branch_rename"
   case lineChanges = "line_changes"
@@ -631,6 +633,48 @@ struct GitClient {
       arguments: ["-C", path, "ls-files", "--others", "--exclude-standard"]
     )
     return parseFileListCount(output)
+  }
+
+  /// Tracked plus untracked files, honoring `.gitignore`. NUL separated so
+  /// paths containing spaces or newlines survive the round trip.
+  nonisolated func listFiles(for worktreeRoot: URL) async throws -> [String] {
+    let path = worktreeRoot.path(percentEncoded: false)
+    let output = try await runGit(
+      operation: .fileList,
+      arguments: ["-C", path, "ls-files", "--cached", "--others", "--exclude-standard", "-z"]
+    )
+    return output.split(separator: "\0").map(String.init).filter { !$0.isEmpty }
+  }
+
+  /// Modified / untracked status per root-relative path, for the tree tint.
+  nonisolated func fileStatuses(for worktreeRoot: URL) async throws -> [String: FileTreeNode.Status] {
+    let path = worktreeRoot.path(percentEncoded: false)
+    let output = try await runGit(
+      operation: .fileStatus,
+      arguments: ["-C", path, "status", "--porcelain", "-z"]
+    )
+    return Self.parseFileStatuses(output)
+  }
+
+  /// Split out from the shell call so it can be exercised without a repo.
+  nonisolated static func parseFileStatuses(_ output: String) -> [String: FileTreeNode.Status] {
+    let fields = output.split(separator: "\0").map(String.init)
+    var statuses: [String: FileTreeNode.Status] = [:]
+    var index = 0
+    while index < fields.count {
+      let entry = fields[index]
+      index += 1
+      // "XY <path>": two status columns, a space, then the path.
+      guard entry.count > 3 else { continue }
+      let code = String(entry.prefix(2))
+      let file = String(entry.dropFirst(3))
+      // Rename and copy entries put the *source* path in the next NUL field
+      // (verified: `R  new.txt\0old.txt\0`). Skipping it keeps that path from
+      // being read as a status entry of its own.
+      if code.hasPrefix("R") || code.hasPrefix("C") { index += 1 }
+      statuses[file] = code.contains("?") ? .untracked : .modified
+    }
+    return statuses
   }
 
   nonisolated func createWorktree(
