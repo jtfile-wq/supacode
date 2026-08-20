@@ -1938,6 +1938,18 @@ extension GhosttySurfaceView {
 
   override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
     let pasteboard = sender.draggingPasteboard
+    // File promises first (screenshot thumbnail, Photos, Mail attachments).
+    // These drags also carry a plain file URL, but it points into the source
+    // app's ACL'd staging folder that only this process may read, so a shell
+    // or agent in the terminal gets "operation not permitted" on it. Receive
+    // a real copy into our own temp folder and paste that path instead.
+    if let receivers = pasteboard.readObjects(forClasses: [NSFilePromiseReceiver.self])
+      as? [NSFilePromiseReceiver],
+      !receivers.isEmpty
+    {
+      receivePromisedFiles(receivers)
+      return true
+    }
     let content: String?
     if let url = pasteboard.string(forType: .URL) {
       content = NSPasteboard.ghosttyEscape(url)
@@ -1956,6 +1968,67 @@ extension GhosttySurfaceView {
       self.insertText(content, replacementRange: NSRange(location: 0, length: 0))
     }
     return true
+  }
+
+  private static let filePromiseQueue: OperationQueue = {
+    let queue = OperationQueue()
+    queue.qualityOfService = .userInitiated
+    return queue
+  }()
+
+  private func receivePromisedFiles(_ receivers: [NSFilePromiseReceiver]) {
+    let destination = FileManager.default.temporaryDirectory
+      .appending(path: "promised-drops-\(UUID().uuidString)", directoryHint: .isDirectory)
+    do {
+      try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+    } catch {
+      surfaceLogger.warning("drop: could not create promise destination: \(error)")
+      return
+    }
+    // Collected on the main actor; inserted once every receiver has reported,
+    // so a multi-file drop pastes as one space-joined line like the URL branch.
+    let collector = PromisedFileCollector(expected: receivers.count) { [weak self] urls in
+      guard let self, !urls.isEmpty else { return }
+      let content = urls.map { NSPasteboard.ghosttyEscape($0.path) }.joined(separator: " ")
+      self.insertText(content, replacementRange: NSRange(location: 0, length: 0))
+    }
+    for receiver in receivers {
+      receiver.receivePromisedFiles(
+        atDestination: destination, options: [:], operationQueue: Self.filePromiseQueue
+      ) { @Sendable url, error in
+        // Explicitly nonisolated: AppKit calls this on the promise queue, and
+        // without the annotation the collector capture makes the closure infer
+        // MainActor isolation, which traps at entry off the main thread.
+        Task { @MainActor in
+          if let error {
+            surfaceLogger.warning("drop: file promise failed: \(error)")
+            collector.report(nil)
+          } else {
+            collector.report(url)
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Gathers promised-file URLs as their copies land, firing once when the last
+/// receiver reports so the drop pastes a single joined path list.
+@MainActor
+private final class PromisedFileCollector {
+  private var urls: [URL] = []
+  private var remaining: Int
+  private let completion: ([URL]) -> Void
+
+  init(expected: Int, completion: @escaping ([URL]) -> Void) {
+    remaining = expected
+    self.completion = completion
+  }
+
+  func report(_ url: URL?) {
+    if let url { urls.append(url) }
+    remaining -= 1
+    if remaining == 0 { completion(urls) }
   }
 }
 
