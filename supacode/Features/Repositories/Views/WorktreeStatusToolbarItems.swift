@@ -215,3 +215,32 @@ struct WorktreeNotificationsToolbarButton: View {
     return controlActiveState == .key ? AnyShapeStyle(.primary) : AnyShapeStyle(.secondary)
   }
 }
+
+/// Trailing toolbar toggle that keeps the Mac awake while lit. Not an inspector
+/// toggle: it flips the app-global CaffeinateStore sleep assertion, so it owns
+/// its state instead of taking isSelected/onActivate like its neighbours.
+struct WorktreeCaffeinateToolbarButton: View {
+  // Selection highlight color, derived from the terminal background luminance
+  // so the lit state tracks the chrome instead of the system accent.
+  let tint: Color
+  // Concrete chrome foreground (white on dark, black on light) so the glyph
+  // doesn't change color when the toggle is selected.
+  let foreground: Color
+
+  var body: some View {
+    let store = CaffeinateStore.shared
+    Toggle(isOn: Binding(get: { store.isOn }, set: { _ in store.toggle() })) {
+      if store.isOn {
+        Label("Keep Awake", systemImage: "cup.and.saucer.fill")
+          .foregroundStyle(foreground)
+      } else {
+        // No foreground so the resting glyph matches the other toolbar buttons
+        // exactly, including the fade when the window isn't key.
+        Label("Keep Awake", systemImage: "cup.and.saucer")
+      }
+    }
+    .tint(tint)
+    .help(store.isOn ? "Allow the Mac to Sleep Again" : "Keep the Mac Awake")
+    .accessibilityLabel(store.isOn ? "Keep Mac awake, on" : "Keep Mac awake, off")
+  }
+}

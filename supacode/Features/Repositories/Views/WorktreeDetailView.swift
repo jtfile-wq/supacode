@@ -854,6 +854,10 @@ struct WorktreeDetailView: View {
         // full-opacity tint reads as a stark solid pill against the glass.
         let chromeForeground = terminalManager.chromeOverlayTint()
         let chromeTint = chromeForeground.opacity(0.2)
+        WorktreeCaffeinateToolbarButton(
+          tint: chromeTint,
+          foreground: chromeForeground
+        )
         WorktreeFilesToolbarButton(
           isSelected: inspectorPresented && inspectorPane == .files,
           tint: chromeTint,
