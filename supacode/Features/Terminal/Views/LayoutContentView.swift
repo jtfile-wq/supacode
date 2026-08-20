@@ -400,8 +400,11 @@ struct PaneStripView: View {
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       // On the whole content region, so a dormant pane still takes drops.
+      // Mounted only while a tab drag is in flight: at rest the invisible
+      // zones win the hosting view's drag hit-test for every pasteboard type,
+      // starving the terminal's own AppKit file-drop handler beneath.
       .overlay {
-        if context == .embedded, let dragModel {
+        if context == .embedded, let dragModel, dragModel.sourceTabID != nil {
           PaneSplitDropZones(pane: pane, store: store, dragModel: dragModel)
         }
       }
